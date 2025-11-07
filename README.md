@@ -36,36 +36,7 @@ TinyTail is perfect for:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐      ┌─────────────────┐
-│                    Application Code                     │      │       UI        │
-│                   (Java with Logback)                   │      └─────────────────┘
-└─────────────────┬───────────────────────────────────────┘              │
-                  │ HTTP POST (Bearer token auth)                        │
-                  ▼                                                      │
-         ┌────────────────────┐     ┌────────────────────┐               │
-         │   API Gateway      │     │   API Gateway      │               │
-         │   /logs/ingest     │     │   /   &  /login    │◄──────────────┘
-         └────────┬───────────┘     └────────┬───────────┘
-                  │                          │
-                  ▼                          │
-         ┌────────────────────┐              │      ┌──────────────────┐
-         │  Lambda Function   │              │      │ EventBridge      │
-         │  (Go)              │              │      │ (1 min schedule) │
-         │  • Ingest logs     │              │      └──────────────────┘
-         │  • Query logs      │              │              │
-         │  • Serve UI        │◄─────────────┘              │ Process alerts
-         │  • Process alerts  │◄────────────────────────────┘
-         └────────┬───────────┘
-                  │
-      ┌───────────┴──────────────┬───────────────────┬──────────────────┐
-      ▼                          ▼                   ▼                  ▼
-┌──────────────┐        ┌──────────────────┐   ┌────────────────┐  ┌──────────┐
-│  DynamoDB    │        │  DynamoDB        │   │   DynamoDB     │  │   SES    │
-│  TinyTailLogs│        │  TinyTailSessions│   │ TinyTailAlerts │  └──────────┘
-│  (180d TTL)  │        │  (14d TTL)       │   │ (Alert state)  │
-└──────────────┘        └──────────────────┘   └────────────────┘       
-```
+![TinyTail Architecture](images/tinytail-architecture.png)
 
 ## Prerequisites
 

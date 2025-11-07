@@ -2,6 +2,8 @@
 
 A completely serverless, zero-cost log viewing system built on AWS Lambda and DynamoDB. Replace expensive log aggregation services with a simple, scalable solution that fits within AWS Free Tier.
 
+![TinyTail Dashboard](images/tinytail-dashboard.png)
+
 ## Features
 
 - **🔐 Password-protected UI**: Secure web interface with session-based authentication
@@ -594,7 +596,7 @@ aws cloudformation describe-stack-events \
 ### No Alerts Received
 
 1. Verify email is verified in SES: `aws ses get-identity-verification-attributes --identities your@email.com --profile tinytail`
-2. Check Lambda logs for alert processing: `aws logs tail /aws/lambda/tinytail-TinyTailFunction-XXXXX --follow --profile tinytail`
+2. Check Lambda logs for alert processing: `aws logs tail /aws/lambda/tinytail --follow --profile tinytail`
 3. Verify `ALERT_RULES` in `.secrets` is valid JSON
 4. Check that `alert-rules.json` was deployed: Look for "Loaded X alert rules" in Lambda logs
 

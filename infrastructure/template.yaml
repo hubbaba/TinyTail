@@ -1,0 +1,222 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: TinyTail - Serverless Log Viewer
+
+Parameters:
+  IngestSecret:
+    Type: String
+    NoEcho: true
+    Description: Secret token for log ingestion authentication
+    MinLength: 32
+
+  UIPassword:
+    Type: String
+    NoEcho: true
+    Description: Password for UI login
+    MinLength: 8
+
+  AlertFromEmail:
+    Type: String
+    Default: ''
+    Description: Email address to send alerts from (must be verified in SES)
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 256
+    Runtime: provided.al2023
+    Architectures:
+      - x86_64
+
+Resources:
+  LogsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: TinyTailLogs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: timestamp_seq
+          AttributeType: S
+        - AttributeName: request_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: timestamp_seq
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: request_id-index
+          KeySchema:
+            - AttributeName: request_id
+              KeyType: HASH
+            - AttributeName: timestamp_seq
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expire_at
+        Enabled: true
+
+  SessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: TinyTailSessions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: session_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: session_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expire_at
+        Enabled: true
+
+  AlertsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: TinyTailAlerts
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: ruleID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ruleID
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  TinyTailFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: tinytail
+      CodeUri: ../lambda/
+      Handler: bootstrap
+      Description: TinyTail serverless log collector and viewer
+      Environment:
+        Variables:
+          TINYTAIL_TABLE_NAME: !Ref LogsTable
+          TINYTAIL_SESSIONS_TABLE_NAME: !Ref SessionsTable
+          TINYTAIL_ALERTS_TABLE_NAME: !Ref AlertsTable
+          TINYTAIL_INGEST_SECRET: !Ref IngestSecret
+          TINYTAIL_UI_PASSWORD: !Ref UIPassword
+          TINYTAIL_ALERT_FROM_EMAIL: !Ref AlertFromEmail
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LogsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AlertsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: '*'
+      Events:
+        AlertSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: 'rate(1 minute)'
+            Description: Check alert rules every minute
+        ServeUI:
+          Type: Api
+          Properties:
+            Path: /
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        LoginPage:
+          Type: Api
+          Properties:
+            Path: /login
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        LoginAPI:
+          Type: Api
+          Properties:
+            Path: /auth/login
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        LogoutAPI:
+          Type: Api
+          Properties:
+            Path: /auth/logout
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        IngestLogs:
+          Type: Api
+          Properties:
+            Path: /logs/ingest
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        GetLatest:
+          Type: Api
+          Properties:
+            Path: /logs/latest
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        SearchLogs:
+          Type: Api
+          Properties:
+            Path: /logs/search
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        GetByDate:
+          Type: Api
+          Properties:
+            Path: /logs/date
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        GetByDateTime:
+          Type: Api
+          Properties:
+            Path: /logs/datetime
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        GetLogs:
+          Type: Api
+          Properties:
+            Path: /logs
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+        AllowOrigin: "'*'"
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
+        - ResourcePath: "/logs/ingest"
+          HttpMethod: "POST"
+          ThrottlingBurstLimit: 2000
+          ThrottlingRateLimit: 1000
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+  LogCollectorEndpoint:
+    Description: Log ingestion endpoint
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/logs/ingest"
+  LogViewerUrl:
+    Description: Web UI URL
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+  TableName:
+    Description: DynamoDB table name
+    Value: !Ref LogsTable
+  FunctionName:
+    Description: Lambda function name
+    Value: !Ref TinyTailFunction

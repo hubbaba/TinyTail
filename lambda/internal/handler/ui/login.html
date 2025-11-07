@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TinyTail - Login</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%231e1e1e' width='100' height='100'/%3E%3Cpath d='M20 25h45' stroke='%234ec9b0' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M20 40h60' stroke='%234ec9b0' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M20 55h50' stroke='%234ec9b0' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M20 70h35' stroke='%2358d1b3' stroke-width='5' stroke-linecap='round'/%3E%3Ccircle cx='62' cy='70' r='3' fill='%2358d1b3'/%3E%3Ccircle cx='70' cy='70' r='3' fill='%2358d1b3'/%3E%3Ccircle cx='78' cy='70' r='3' fill='%2358d1b3'/%3E%3C/svg%3E">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        vscode: {
+                            bg: '#1e1e1e',
+                            panel: '#252526',
+                            border: '#333',
+                            text: '#d4d4d4',
+                            accent: '#4ec9b0',
+                            blue: '#569cd6',
+                            comment: '#858585',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+</head>
+<body class="bg-vscode-bg min-h-screen flex items-center justify-center font-mono">
+    <div x-data="loginForm()" class="bg-vscode-panel p-8 rounded-lg border border-vscode-border w-full max-w-md">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-vscode-accent">TinyTail</h1>
+            <p class="text-vscode-comment mt-2">Serverless Log Viewer</p>
+        </div>
+        <form @submit.prevent="login" class="space-y-6">
+            <div>
+                <label for="password" class="block text-sm font-medium text-vscode-text mb-2">
+                    Password
+                </label>
+                <input
+                    type="password"
+                    id="password"
+                    x-model="password"
+                    @keydown.enter="login"
+                    class="w-full px-4 py-2 bg-gray-700 border border-vscode-border text-vscode-text rounded-md focus:ring-2 focus:ring-vscode-accent focus:border-transparent focus:outline-none"
+                    placeholder="Enter password"
+                    :disabled="loading"
+                    autofocus
+                    required>
+            </div>
+            <div x-show="error" x-transition class="bg-red-900/50 border border-red-600 text-red-300 px-4 py-3 rounded">
+                <span x-text="error"></span>
+            </div>
+            <button
+                type="submit"
+                :disabled="loading"
+                class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium py-2 px-4 rounded-md transition-colors">
+                <span x-show="!loading">Sign In</span>
+                <span x-show="loading">Signing in...</span>
+            </button>
+        </form>
+        <div class="mt-6 text-center text-sm text-vscode-comment">
+            <p>Session lasts for 2 weeks</p>
+        </div>
+    </div>
+    <script>
+        // Detect base path from current URL (handles API Gateway stages and custom domains)
+        function getBasePath() {
+            const path = window.location.pathname;
+            // If we're at /login, base is empty
+            // If we're at /prod/login or /stage/login, extract the base
+            if (path === '/login') {
+                return '';
+            }
+            // Remove /login from the end to get the base path
+            return path.replace(/\/login$/, '');
+        }
+
+        function loginForm() {
+            return {
+                password: '',
+                loading: false,
+                error: '',
+                basePath: getBasePath(),
+
+                async login() {
+                    this.error = '';
+                    this.loading = true;
+
+                    try {
+                        const response = await fetch(`${this.basePath}/auth/login`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ password: this.password }),
+                        });
+
+                        const data = await response.json();
+
+                        if (response.ok) {
+                            // Redirect to main UI
+                            window.location.href = `${this.basePath}/`;
+                        } else {
+                            this.error = data.error || 'Invalid password';
+                            this.password = '';
+                        }
+                    } catch (error) {
+                        this.error = 'Failed to connect to server';
+                        console.error('Login error:', error);
+                    } finally {
+                        this.loading = false;
+                    }
+                }
+            };
+        }
+    </script>
+</body>
+</html>

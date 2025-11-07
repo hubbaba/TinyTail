@@ -1,0 +1,49 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+bootstrap
+
+# Go
+*.test
+*.out
+go.work
+vendor/
+
+# Java
+target/
+build/
+.gradle/
+*.class
+*.jar
+*.war
+*.ear
+.project
+.classpath
+.settings/
+
+# IDE
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# AWS SAM
+.aws-sam/
+samconfig.toml
+
+# Secrets (never commit!)
+.secrets
+.env
+secrets.txt
+lambda/alert-rules.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/

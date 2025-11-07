@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TinyTail - Log Viewer</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%231e1e1e' width='100' height='100'/%3E%3Cpath d='M20 25h45' stroke='%234ec9b0' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M20 40h60' stroke='%234ec9b0' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M20 55h50' stroke='%234ec9b0' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M20 70h35' stroke='%2358d1b3' stroke-width='5' stroke-linecap='round'/%3E%3Ccircle cx='62' cy='70' r='3' fill='%2358d1b3'/%3E%3Ccircle cx='70' cy='70' r='3' fill='%2358d1b3'/%3E%3Ccircle cx='78' cy='70' r='3' fill='%2358d1b3'/%3E%3C/svg%3E">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        vscode: {
+                            bg: '#1e1e1e',
+                            panel: '#252526',
+                            border: '#333',
+                            text: '#d4d4d4',
+                            accent: '#4ec9b0',
+                            blue: '#569cd6',
+                            comment: '#858585',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .log-message {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: 12px;
+        }
+        .log-entry {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            padding: 0.25rem 0.75rem;
+            border-bottom: 1px solid #2d2d2d;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .log-entry:hover {
+            background-color: #252526;
+        }
+        .log-timestamp {
+            color: #858585;
+            min-width: 80px;
+            flex-shrink: 0;
+        }
+        .log-level {
+            padding: 0.125rem 0.375rem;
+            border-radius: 0.25rem;
+            font-weight: bold;
+            font-size: 10px;
+            min-width: 50px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        .log-source {
+            color: #569cd6;
+            min-width: 100px;
+            max-width: 150px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .log-logger {
+            color: #dcdcaa;
+            width: 250px;
+            overflow: hidden;
+            white-space: nowrap;
+            flex-shrink: 0;
+            text-overflow: ellipsis;
+        }
+        .log-message-wrapper {
+            flex: 1;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body class="bg-vscode-bg text-vscode-text font-mono text-sm">
+    <div x-data="logViewer()" x-cloak class="p-5">
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-5 pb-3 border-b border-vscode-border">
+            <h1 class="text-2xl font-bold text-vscode-accent">TinyTail</h1>
+            <div class="flex items-center gap-4">
+                <span x-text="statusMessage" class="text-vscode-comment text-xs"></span>
+                <button @click="logout" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded transition">
+                    Logout
+                </button>
+            </div>
+        </div>
+        <!-- Controls -->
+        <div class="bg-vscode-panel p-4 rounded mb-5">
+            <!-- Search & DateTime -->
+            <div class="flex flex-wrap gap-2">
+                <input type="text" x-model="searchQuery" @keydown.enter="performSearch" placeholder="Search logs..." class="flex-1 min-w-[200px] bg-gray-700 border border-vscode-border text-vscode-text px-3 py-2 rounded focus:ring-2 focus:ring-vscode-accent focus:outline-none">
+                <input type="datetime-local" x-model="searchDateTime" class="bg-gray-700 border border-vscode-border text-vscode-text px-3 py-2 rounded focus:ring-2 focus:ring-vscode-accent focus:outline-none" step="60">
+                <button @click="performSearch" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition">
+                    Search
+                </button>
+                <button @click="clearSearch" class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded transition">
+                    Clear
+                </button>
+            </div>
+        </div>
+        <!-- Error Message -->
+        <div x-show="errorMessage" x-transition class="bg-red-900/50 border border-red-600 text-red-300 px-4 py-3 rounded mb-4">
+            <span x-text="errorMessage"></span>
+        </div>
+        <!-- Logs Container -->
+        <div x-ref="logsContainer" @scroll="handleScroll" class="border border-vscode-border rounded overflow-auto" style="max-height: calc(100vh - 250px);">
+            <!-- Loading older logs indicator -->
+            <div x-show="loadingOlder" class="text-center py-2 text-vscode-comment text-xs bg-vscode-panel">
+                Loading older logs...
+            </div>
+            <!-- Loading State -->
+            <div x-show="loading && logs.length === 0" class="text-center py-10 text-vscode-comment">
+                Loading logs...
+            </div>
+            <!-- Empty State -->
+            <div x-show="!loading && logs.length === 0" class="text-center py-10 text-vscode-comment">
+                No logs found. Logs will appear here automatically.
+            </div>
+            <!-- Log Entries -->
+            <template x-for="log in logs" :key="log.cursor">
+                <div class="log-entry">
+                    <span class="log-timestamp" x-text="formatTimestamp(log.timestamp)"></span>
+                    <span
+                        :class="{
+                            'bg-gray-700 text-gray-400': log.level === 'DEBUG',
+                            'bg-green-900 text-green-300': log.level === 'INFO',
+                            'bg-yellow-900 text-yellow-300': log.level === 'WARN',
+                            'bg-red-900 text-red-300': log.level === 'ERROR'
+                        }"
+                        class="log-level"
+                        x-text="log.level"
+                    ></span>
+                    <span class="log-source" x-text="log.source"></span>
+                    <span class="log-logger" :title="log.logger || ''" x-text="abbreviateLogger(log.logger)"></span>
+                    <div class="log-message-wrapper">
+                        <div class="log-message text-vscode-text" x-text="log.message"></div>
+                    </div>
+                </div>
+            </template>
+        </div>
+        <!-- Status bar -->
+        <div class="mt-2 text-center text-vscode-comment text-xs">
+            <span x-show="liveTailActive" class="text-green-400">● Live</span>
+            <span x-show="!liveTailActive && !isSearchMode">
+                <a href="#" @click.prevent="scrollToBottom" class="text-vscode-accent hover:underline">Scroll to Latest</a>
+            </span>
+        </div>
+    </div>
+    <script>
+        // Detect base path from current URL (handles API Gateway stages and custom domains)
+        function getBasePath() {
+            const path = window.location.pathname;
+            // If we're at /, base is empty (custom domain)
+            // If we're at /prod/ or /stage/, extract the base (API Gateway)
+            if (path === '/') {
+                return '';
+            }
+            // Remove trailing slash to get the base path
+            return path.replace(/\/$/, '');
+        }
+
+        function logViewer() {
+            return {
+                logs: [],
+                loading: false,
+                loadingOlder: false,
+                liveTailActive: false,
+                liveTailInterval: null,
+                searchQuery: '',
+                searchDateTime: '',
+                errorMessage: '',
+                statusMessage: '',
+                basePath: getBasePath(),
+                isSearchMode: false,
+                lastScrollTop: 0,
+
+                init() {
+                    // Auto-start live tail on page load
+                    this.startLiveTail();
+                },
+
+                async loadLatestLogs() {
+                    const isFirstLoad = this.logs.length === 0;
+                    this.loading = isFirstLoad; // Only show loading if no logs yet
+                    this.errorMessage = '';
+
+                    try {
+                        const response = await fetch(`${this.basePath}/logs/latest?limit=200`);
+                        if (response.status === 302 || response.redirected) {
+                            window.location.href = `${this.basePath}/login`;
+                            return;
+                        }
+                        if (!response.ok) throw new Error('Failed to load logs');
+
+                        let data = await response.json();
+
+                        // If live tail was stopped while fetching (user scrolled up), ignore results
+                        // Exception: always process first load
+                        if (!this.liveTailActive && !isFirstLoad) {
+                            return;
+                        }
+
+                        if (data && data.length > 0) {
+                            // Reverse so newest is at bottom
+                            data.reverse();
+                            this.logs = data;
+                            this.statusMessage = `Last updated: ${new Date().toLocaleTimeString()}`;
+
+                            // Auto-scroll to bottom (only happens if live tail active or first load)
+                            this.$nextTick(() => {
+                                this.scrollToBottom();
+                            });
+                        }
+                    } catch (error) {
+                        this.errorMessage = error.message;
+                        this.statusMessage = 'Error loading logs';
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                async loadOlderLogs() {
+                    if (this.logs.length === 0 || this.loadingOlder) return;
+
+                    // Get the oldest log (first in array since reversed)
+                    const oldestCursor = this.logs[0].cursor;
+                    this.loadingOlder = true;
+
+                    // Remember scroll position
+                    const container = this.$refs.logsContainer;
+                    const oldScrollHeight = container.scrollHeight;
+
+                    try {
+                        const response = await fetch(`${this.basePath}/logs?limit=100&before=${oldestCursor}`);
+                        if (!response.ok) throw new Error('Failed to load older logs');
+
+                        let data = await response.json();
+                        if (data && data.length > 0) {
+                            // Reverse and prepend to beginning of array
+                            data.reverse();
+                            this.logs = [...data, ...this.logs];
+
+                            // Maintain scroll position
+                            this.$nextTick(() => {
+                                const newScrollHeight = container.scrollHeight;
+                                container.scrollTop = newScrollHeight - oldScrollHeight;
+                            });
+                        }
+                    } catch (error) {
+                        this.errorMessage = error.message;
+                    } finally {
+                        this.loadingOlder = false;
+                    }
+                },
+
+                async performSearch() {
+                    this.stopLiveTail();
+                    this.isSearchMode = true;
+
+                    if (!this.searchQuery && !this.searchDateTime) {
+                        this.isSearchMode = false;
+                        this.startLiveTail();
+                        return;
+                    }
+
+                    this.loading = true;
+                    this.errorMessage = '';
+
+                    try {
+                        let data;
+                        if (this.searchDateTime) {
+                            const timestamp = new Date(this.searchDateTime).toISOString();
+                            const response = await fetch(`${this.basePath}/logs/datetime?timestamp=${encodeURIComponent(timestamp)}`);
+                            if (!response.ok) throw new Error('Search failed');
+                            data = await response.json();
+                            const displayTime = new Date(this.searchDateTime).toLocaleString();
+                            this.statusMessage = `Found ${data?.length || 0} logs around ${displayTime}`;
+                        } else {
+                            const response = await fetch(`${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}`);
+                            if (!response.ok) throw new Error('Search failed');
+                            data = await response.json();
+                            this.statusMessage = `Found ${data?.length || 0} results`;
+                        }
+
+                        // Reverse so newest is at bottom
+                        if (data && data.length > 0) {
+                            data.reverse();
+                        }
+                        this.logs = data || [];
+
+                        // Scroll to bottom after search
+                        this.$nextTick(() => this.scrollToBottom());
+                    } catch (error) {
+                        this.errorMessage = error.message;
+                        this.statusMessage = 'Error searching logs';
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                clearSearch() {
+                    this.searchQuery = '';
+                    this.searchDateTime = '';
+                    this.isSearchMode = false;
+                    this.startLiveTail();
+                },
+
+                handleScroll() {
+                    if (this.isSearchMode) return; // No infinite scroll in search mode
+
+                    const container = this.$refs.logsContainer;
+                    const currentScrollTop = container.scrollTop;
+                    const atBottom = this.isScrolledToBottom();
+                    const scrollingUp = currentScrollTop < this.lastScrollTop;
+
+                    // Only load older logs if scrolling UP and near top
+                    if (scrollingUp && currentScrollTop < 100) {
+                        this.loadOlderLogs();
+                    }
+
+                    // Update last scroll position
+                    this.lastScrollTop = currentScrollTop;
+
+                    // Only pause live tail if user actively scrolled UP
+                    // Don't pause just from being not-at-bottom (could be from DOM changes)
+                    if (scrollingUp && !atBottom && this.liveTailActive) {
+                        this.stopLiveTail();
+                    } else if (atBottom && !this.liveTailActive && !this.isSearchMode) {
+                        this.startLiveTail();
+                    }
+                },
+
+                isScrolledToBottom() {
+                    const container = this.$refs.logsContainer;
+                    if (!container) return true;
+                    const threshold = 100; // pixels from bottom
+                    return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+                },
+
+                scrollToBottom() {
+                    const container = this.$refs.logsContainer;
+                    if (container) {
+                        container.scrollTop = container.scrollHeight;
+                    }
+                },
+
+                startLiveTail() {
+                    if (this.liveTailActive) return; // Already active
+
+                    this.liveTailActive = true;
+                    this.loadLatestLogs();
+                    this.liveTailInterval = setInterval(() => {
+                        this.loadLatestLogs();
+                    }, 3000);
+                },
+
+                stopLiveTail() {
+                    this.liveTailActive = false;
+                    if (this.liveTailInterval) {
+                        clearInterval(this.liveTailInterval);
+                        this.liveTailInterval = null;
+                    }
+                },
+
+                async logout() {
+                    try {
+                        await fetch(`${this.basePath}/auth/logout`, { method: 'POST' });
+                        window.location.href = `${this.basePath}/login`;
+                    } catch (error) {
+                        this.errorMessage = 'Logout failed';
+                    }
+                },
+
+                formatTimestamp(timestamp) {
+                    // Format as HH:MM:SS for compact display
+                    return new Date(timestamp).toLocaleTimeString('en-US', {
+                        hour12: false,
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit'
+                    });
+                },
+
+                abbreviateLogger(logger) {
+                    if (!logger) return '';
+
+                    // Split by dots: org.springframework.data.SomeClass
+                    const parts = logger.split('.');
+
+                    // If only one part (no package), return as-is
+                    if (parts.length <= 1) return logger;
+
+                    // Abbreviate all parts except the last one
+                    const abbreviated = parts.slice(0, -1).map(part => part.charAt(0)).join('.');
+                    const className = parts[parts.length - 1];
+
+                    return abbreviated + '.' + className;
+                }
+            };
+        }
+    </script>
+</body>
+</html>

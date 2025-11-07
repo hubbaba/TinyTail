@@ -1,6 +1,6 @@
 # TinyTail
 
-A completely serverless, zero-cost log viewing system built on AWS Lambda and DynamoDB. Replace expensive log aggregation services with a simple, scalable solution that fits within AWS Free Tier.
+A completely serverless, zero-cost log viewing system built on AWS Lambda and DynamoDB. Replace expensive log aggregation services with a simple, scalable self-hosted solution that fits within AWS Free Tier.
 
 ![TinyTail Dashboard](images/tinytail-dashboard.png)
 

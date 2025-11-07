@@ -14,31 +14,31 @@ A completely serverless, zero-cost log viewing system built on AWS Lambda and Dy
 - **☁️ Serverless**: No infrastructure to manage
 - **📦 Large message support**: Handles large Java stack traces (auto-chunking)
 - **🚀 Simple deployment**: One command to deploy everything
-- **⏱️ Smart pagination**: Cursor-based log navigation with ULID timestamps
+- **⏱️ Smart pagination**: Scroll-based log navigation with ULID timestamps
 - **🎨 Modern UI**: Alpine.js + TailwindCSS with live tail mode
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Application Code                     │
-│                   (Java with Logback)                   │
-└─────────────────┬───────────────────────────────────────┘
-                  │ HTTP POST (Bearer token auth)
-                  ▼
-         ┌────────────────────┐
-         │   API Gateway       │
-         │   /logs/ingest      │
-         └────────┬───────────┘
-                  │
-                  ▼
-         ┌────────────────────┐         ┌──────────────────┐
-         │  Lambda Function   │         │ EventBridge      │
-         │  (Go)              │         │ (1 min schedule) │
-         │  • Ingest logs     │         └──────────────────┘
-         │  • Query logs      │                  │
-         │  • Serve UI        │                  │ Process alerts
-         │  • Process alerts  │◄─────────────────┘
+┌─────────────────────────────────────────────────────────┐      ┌─────────────────┐
+│                    Application Code                     │      │       UI        │
+│                   (Java with Logback)                   │      └─────────────────┘
+└─────────────────┬───────────────────────────────────────┘              │
+                  │ HTTP POST (Bearer token auth)                        │
+                  ▼                                                      │
+         ┌────────────────────┐     ┌────────────────────┐               │
+         │   API Gateway      │     │   API Gateway      │               │
+         │   /logs/ingest     │     │   /   &  /login    │◄──────────────┘
+         └────────┬───────────┘     └────────┬───────────┘
+                  │                          │
+                  ▼                          │
+         ┌────────────────────┐              │      ┌──────────────────┐
+         │  Lambda Function   │              │      │ EventBridge      │
+         │  (Go)              │              │      │ (1 min schedule) │
+         │  • Ingest logs     │              │      └──────────────────┘
+         │  • Query logs      │              │              │
+         │  • Serve UI        │◄─────────────┘              │ Process alerts
+         │  • Process alerts  │◄────────────────────────────┘
          └────────┬───────────┘
                   │
       ┌───────────┴──────────────┬───────────────────┬──────────────────┐
@@ -62,34 +62,78 @@ A completely serverless, zero-cost log viewing system built on AWS Lambda and Dy
 
 Create a dedicated IAM user for TinyTail deployments with the following permissions:
 
-### Required Policies
+### Required Policy
 
-#### 1. CloudFormation & SAM Deployment
+Create a custom IAM policy with least-privilege permissions for TinyTail:
+
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "CloudFormationAccess",
       "Effect": "Allow",
       "Action": [
-        "cloudformation:*",
-        "s3:*"
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:DeleteStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:GetTemplate",
+        "cloudformation:ValidateTemplate",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ExecuteChangeSet"
       ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-#### 2. Lambda Management
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
+      "Resource": [
+        "arn:aws:cloudformation:*:*:stack/tinytail/*",
+        "arn:aws:cloudformation:*:*:stack/tinytail"
+      ]
+    },
     {
+      "Sid": "S3DeploymentBuckets",
       "Effect": "Allow",
       "Action": [
-        "lambda:*",
+        "s3:CreateBucket",
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:GetBucketVersioning",
+        "s3:PutBucketVersioning",
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::tinytail-deployments",
+        "arn:aws:s3:::tinytail-deployments/*",
+        "arn:aws:s3:::aws-sam-cli-managed-default-*",
+        "arn:aws:s3:::aws-sam-cli-managed-default-*/*"
+      ]
+    },
+    {
+      "Sid": "LambdaManagement",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateFunction",
+        "lambda:DeleteFunction",
+        "lambda:GetFunction",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration",
+        "lambda:ListVersionsByFunction",
+        "lambda:PublishVersion",
+        "lambda:AddPermission",
+        "lambda:RemovePermission",
+        "lambda:GetFunctionConfiguration",
+        "lambda:TagResource",
+        "lambda:UntagResource"
+      ],
+      "Resource": "arn:aws:lambda:*:*:function:tinytail"
+    },
+    {
+      "Sid": "IAMRoleManagement",
+      "Effect": "Allow",
+      "Action": [
         "iam:CreateRole",
         "iam:DeleteRole",
         "iam:GetRole",
@@ -98,56 +142,66 @@ Create a dedicated IAM user for TinyTail deployments with the following permissi
         "iam:DetachRolePolicy",
         "iam:PutRolePolicy",
         "iam:DeleteRolePolicy",
-        "iam:GetRolePolicy"
+        "iam:GetRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole"
       ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-#### 3. DynamoDB Management
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
+      "Resource": [
+        "arn:aws:iam::*:role/tinytail-*"
+      ]
+    },
     {
+      "Sid": "DynamoDBManagement",
       "Effect": "Allow",
       "Action": [
         "dynamodb:CreateTable",
         "dynamodb:DeleteTable",
         "dynamodb:DescribeTable",
+        "dynamodb:UpdateTable",
         "dynamodb:DescribeTimeToLive",
-        "dynamodb:UpdateTimeToLive"
+        "dynamodb:UpdateTimeToLive",
+        "dynamodb:TagResource",
+        "dynamodb:UntagResource"
       ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-#### 4. API Gateway Management
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
+      "Resource": [
+        "arn:aws:dynamodb:*:*:table/TinyTailLogs",
+        "arn:aws:dynamodb:*:*:table/TinyTailSessions",
+        "arn:aws:dynamodb:*:*:table/TinyTailAlerts"
+      ]
+    },
     {
+      "Sid": "APIGatewayManagement",
       "Effect": "Allow",
       "Action": [
-        "apigateway:*"
+        "apigateway:POST",
+        "apigateway:DELETE",
+        "apigateway:GET",
+        "apigateway:PATCH",
+        "apigateway:PUT"
       ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-#### 5. SES for Email Alerts
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
+      "Resource": [
+        "arn:aws:apigateway:*::/restapis",
+        "arn:aws:apigateway:*::/restapis/*"
+      ]
+    },
     {
+      "Sid": "EventBridgeManagement",
+      "Effect": "Allow",
+      "Action": [
+        "events:PutRule",
+        "events:DeleteRule",
+        "events:DescribeRule",
+        "events:EnableRule",
+        "events:DisableRule",
+        "events:PutTargets",
+        "events:RemoveTargets",
+        "events:TagResource",
+        "events:UntagResource"
+      ],
+      "Resource": "arn:aws:events:*:*:rule/tinytail-*"
+    },
+    {
+      "Sid": "SESEmailAlerts",
       "Effect": "Allow",
       "Action": [
         "ses:VerifyEmailIdentity",
@@ -162,51 +216,35 @@ Create a dedicated IAM user for TinyTail deployments with the following permissi
 }
 ```
 
-#### 6. EventBridge for Scheduled Alerts
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "events:PutRule",
-        "events:DeleteRule",
-        "events:DescribeRule",
-        "events:PutTargets",
-        "events:RemoveTargets"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
+**Note**: SES permissions require `Resource: "*"` as email addresses are not ARN-addressable resources.
 
-### Quick IAM User Creation
+
+
+## Deployment from Scratch
+
+### 1. Creating the IAM User
+
+First, save the policy above to a file named `tinytail-policy.json`, then run:
 
 ```bash
+# Running as a privileged user:
 # Create IAM user
 aws iam create-user --user-name tinytail-deployer
 
-# Attach policies (you can create custom policies or use AWS managed ones)
+# Create the custom policy
+aws iam create-policy \
+  --policy-name TinyTailDeploymentPolicy \
+  --policy-document file://tinytail-policy.json
+
+# Attach the policy (replace YOUR_ACCOUNT_ID)
 aws iam attach-user-policy \
   --user-name tinytail-deployer \
-  --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
+  --policy-arn arn:aws:iam::YOUR_ACCOUNT_ID:policy/TinyTailDeploymentPolicy
 
 # Create access keys
 aws iam create-access-key --user-name tinytail-deployer
 
 # Configure AWS CLI profile
-aws configure --profile tinytail
-```
-
-**Note**: `PowerUserAccess` provides sufficient permissions for TinyTail. For production, create a custom policy combining the policies above for least-privilege access.
-
-## Deployment from Scratch
-
-### 1. Configure AWS Profile
-
-```bash
 aws configure --profile tinytail
 # Enter AWS Access Key ID
 # Enter AWS Secret Access Key
@@ -214,10 +252,12 @@ aws configure --profile tinytail
 # Enter output format (e.g., json)
 ```
 
+**Note**: These permissions follow the principle of least privilege, restricting access to only TinyTail-related resources.
+
 ### 2. Clone and Deploy
 
 ```bash
-git clone https://github.com/yourusername/TinyTail.git
+git clone https://github.com/hubbaba/TinyTail.git
 cd TinyTail
 ./scripts/deploy.sh
 ```
@@ -225,7 +265,7 @@ cd TinyTail
 The deployment script will:
 1. Generate secure random secrets (43-char ingest secret, 24-char UI password)
 2. Save secrets to `.secrets` file (gitignored)
-3. Generate `lambda/alert-rules.json` from `.secrets`
+3. Generate `lambda/alert-rules.json` from `.secrets` for email alerts.
 4. Build the Go Lambda function
 5. Deploy infrastructure via AWS SAM
 6. Display API endpoints and credentials
@@ -257,15 +297,15 @@ Visit the **LogViewerUrl** and log in with your UI password from `.secrets`.
 
 ## Configuration
 
-### Alert Rules
+### Email Alert Rules
 
-Alert rules are configured in `.secrets` and automatically deployed. Edit the `ALERT_RULES` JSON array:
+Email alert rules are configured in `.secrets` and automatically deployed. Edit the `ALERT_RULES` JSON array to add your rules:
 
 ```bash
 # In .secrets file
 ALERT_RULES='[
   {
-    "pattern": "Some example text",
+    "pattern": "Some example text to find",
     "window": "10m",
     "email": "your@email.com"
   },
@@ -310,7 +350,7 @@ Check your inbox and click the verification link. Configure the FROM address in 
 ALERT_FROM_EMAIL=alerts@yourdomain.com
 ```
 
-**Note**: SES starts in sandbox mode (200 emails/day limit). 200 emails/day is more than enough for TinyTail.
+**Note**: SES starts in sandbox mode supports 200 emails/day limit. 200 emails/day is more than enough for TinyTail.
 
 ### Environment Variables
 
@@ -333,9 +373,9 @@ ALERT_RULES='[]'                     # Alert rules JSON (see above)
 
 ## Application Integration
 
-### Java with Logback
+### Java with Logback Appender
 
-#### 1. Build and Install the Appender
+#### 1. Build and Install the TinyTail Logback Appender
 
 ```bash
 cd logback-appender
@@ -403,8 +443,6 @@ curl -X POST https://your-api-id.execute-api.us-east-2.amazonaws.com/prod/logs/i
   }'
 ```
 
-If you'd like to write a logger appender for another language, please let me know.
-
 ## Database Schema
 
 ### TinyTailLogs Table
@@ -457,11 +495,7 @@ If you'd like to write a logger appender for another language, please let me kno
 - API Gateway: ~$0.35
 - **Total: ~$3.05/month**
 
-**At scale (10GB logs/month, 100K requests/month):**
-- Lambda: ~$2.00
-- DynamoDB: ~$15.00
-- API Gateway: ~$3.50
-- **Total: ~$20.50/month**
+*Savings of ~$200/year compared to using 3rd party solution*
 
 ## Development
 

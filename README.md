@@ -495,7 +495,7 @@ curl -X POST https://your-api-id.execute-api.us-east-2.amazonaws.com/prod/logs/i
 - API Gateway: ~$0.35
 - **Total: ~$3.05/month**
 
-*Savings of ~$200/year compared to using 3rd party solution*
+*Savings of ~$200/year compared to using a 3rd party solution*
 
 ## Development
 

@@ -4,6 +4,23 @@ A completely serverless, zero-cost log viewing system built on AWS Lambda and Dy
 
 ![TinyTail Dashboard](images/tinytail-dashboard.png)
 
+> **Status**: Production-ready. Actively used in production environments.
+
+## Intended Audience
+
+TinyTail is perfect for:
+
+- **Small teams** tired of paying $15-50/month for basic log aggregation
+- Developers who find **AWS CloudWatch's UI clunky** and want a simpler log viewer
+- Teams currently using **Papertrail, Loggly, or Datadog** who want to cut costs
+- **Cost-conscious startups** that need simple log management without the SaaS pricing
+- Projects with **moderate log volumes** (< 10GB/month) that fit comfortably in AWS Free Tier
+
+**Not ideal for:**
+- Enterprise teams needing advanced features (log analytics, complex alerting, compliance)
+- High-volume applications - consider dedicated solutions
+- Teams without any AWS experience
+
 ## Features
 
 - **🔐 Password-protected UI**: Secure web interface with session-based authentication

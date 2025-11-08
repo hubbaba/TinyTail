@@ -204,9 +204,28 @@
                 searchEndTime: '',
                 lastScrollTop: 0,
                 isProgrammaticScroll: false,
+                debugEnabled: false, // Set to true to enable debug logging
+
+                debug(message, data = null) {
+                    if (this.debugEnabled) {
+                        const now = new Date();
+                        const timestamp = now.toLocaleTimeString('en-US', {
+                            hour12: false,
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit'
+                        }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
+
+                        if (data !== null) {
+                            console.log(`[${timestamp}] [TinyTail] ${message}`, data);
+                        } else {
+                            console.log(`[${timestamp}] [TinyTail] ${message}`);
+                        }
+                    }
+                },
 
                 init() {
-                    // Auto-start live tail on page load
+                    this.debug('init() - Starting application');
                     this.startLiveTail();
                 },
 
@@ -218,10 +237,9 @@
                     try {
                         let url;
                         if (isFirstLoad) {
-                            // On first load, get the latest 200 logs
                             url = `${this.basePath}/logs/latest?limit=200`;
-                        } else {
-                            // On subsequent polls, only get logs after the newest one we have
+                        }
+                        else {
                             const newestCursor = this.logs[this.logs.length - 1].cursor;
                             url = `${this.basePath}/logs?limit=200&after=${newestCursor}`;
                         }
@@ -234,10 +252,7 @@
                         if (!response.ok) throw new Error('Failed to load logs');
 
                         let data = await response.json();
-
-                        // If live tail was stopped while fetching (user scrolled up), ignore results
-                        // Exception: always process first load
-                        if (!this.liveTailActive && !isFirstLoad) {
+                        if ((!this.liveTailActive && !isFirstLoad) || this.isSearchMode) {
                             return;
                         }
 
@@ -246,32 +261,37 @@
                                 // First load uses /logs/latest which returns newest-first, so reverse
                                 data.reverse();
                                 this.logs = data;
-                            } else {
+                            }
+                            else {
                                 // Subsequent polls use /logs?after=X which returns chronological order (oldest-first)
                                 // Append directly without reversing
                                 this.logs = [...this.logs, ...data];
                             }
 
                             this.statusMessage = `Last updated: ${new Date().toLocaleTimeString()}`;
-
-                            // Auto-scroll to bottom (only happens if live tail active or first load)
                             this.$nextTick(() => {
                                 this.scrollToBottom();
                             });
                         }
-                    } catch (error) {
+                    }
+                    catch (error) {
                         this.errorMessage = error.message;
                         this.statusMessage = 'Error loading logs';
-                    } finally {
+                    }
+                    finally {
                         this.loading = false;
                     }
                 },
 
                 async loadOlderLogs() {
-                    if (this.logs.length === 0 || this.loadingOlder) return;
+                    this.debug('loadOlderLogs() - Called');
+                    if (this.logs.length === 0 || this.loadingOlder) {
+                        this.debug('loadOlderLogs() - Skipping (no logs or already loading)');
+                        return;
+                    }
 
-                    // Get the oldest log (first in array since reversed)
                     const oldestCursor = this.logs[0].cursor;
+                    this.debug('loadOlderLogs() - Loading before cursor:', oldestCursor);
                     this.loadingOlder = true;
 
                     // Remember scroll position
@@ -283,6 +303,7 @@
                         if (!response.ok) throw new Error('Failed to load older logs');
 
                         let data = await response.json();
+                        this.debug('loadOlderLogs() - Received:', data?.length);
                         if (data && data.length > 0) {
                             // Backend returns chronological order (oldest first) - no need to reverse
                             this.logs = [...data, ...this.logs];
@@ -293,18 +314,25 @@
                                 container.scrollTop = newScrollHeight - oldScrollHeight;
                             });
                         }
-                    } catch (error) {
+                    }
+                    catch (error) {
+                        this.debug('loadOlderLogs() - Error:', error.message);
                         this.errorMessage = error.message;
-                    } finally {
+                    }
+                    finally {
                         this.loadingOlder = false;
                     }
                 },
 
                 async loadOlderSearchResults() {
-                    if (this.logs.length === 0 || this.loadingOlder || !this.hasMoreSearchResults) return;
+                    this.debug('loadOlderSearchResults() - Called');
+                    if (this.logs.length === 0 || this.loadingOlder || !this.hasMoreSearchResults) {
+                        this.debug('loadOlderSearchResults() - Skipping');
+                        return;
+                    }
 
-                    // Get the oldest log (first in array since reversed)
                     const oldestCursor = this.logs[0].cursor;
+                    this.debug('loadOlderSearchResults() - Loading before cursor:', oldestCursor);
                     this.loadingOlder = true;
 
                     // Remember scroll position
@@ -312,22 +340,22 @@
                     const oldScrollHeight = container.scrollHeight;
 
                     try {
-                        // Request 201 to check if there are more
-                        const url = `${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}&limit=201&before=${oldestCursor}&start=${encodeURIComponent(this.searchStartTime)}&end=${encodeURIComponent(this.searchEndTime)}`;
-                        const response = await fetch(url);
-                        if (!response.ok) throw new Error('Failed to load older search results');
+                        const response = await fetch(`${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}&limit=101&before=${oldestCursor}&start=${encodeURIComponent(this.searchStartTime)}&end=${encodeURIComponent(this.searchEndTime)}`);
+                        if (!response.ok) {
+                            throw new Error('Failed to load older search results');
+                        }
 
                         let data = await response.json();
+                        this.debug('loadOlderSearchResults() - Received:', data?.length);
                         if (data && data.length > 0) {
-                            // Check if there are more results beyond this batch
-                            if (data.length > 200) {
+                            if (data.length > 100) {
                                 this.hasMoreSearchResults = true;
-                                data = data.slice(0, 200);
-                            } else {
+                                data = data.slice(0, 100);
+                            }
+                            else {
                                 this.hasMoreSearchResults = false;
                             }
 
-                            // Reverse and prepend to beginning of array
                             data.reverse();
                             this.logs = [...data, ...this.logs];
 
@@ -336,22 +364,30 @@
                                 const newScrollHeight = container.scrollHeight;
                                 container.scrollTop = newScrollHeight - oldScrollHeight;
                             });
-                        } else {
-                            // No more results
+                        }
+                        else {
+                            this.debug('loadOlderSearchResults() - No more results');
                             this.hasMoreSearchResults = false;
                         }
-                    } catch (error) {
+                    }
+                    catch (error) {
+                        this.debug('loadOlderSearchResults() - Error:', error.message);
                         this.errorMessage = error.message;
-                    } finally {
+                    }
+                    finally {
                         this.loadingOlder = false;
                     }
                 },
 
                 async loadOlderDateTimeLogs() {
-                    if (this.logs.length === 0 || this.loadingOlder) return;
+                    this.debug('loadOlderDateTimeLogs() - Called');
+                    if (this.logs.length === 0 || this.loadingOlder) {
+                        this.debug('loadOlderDateTimeLogs() - Skipping');
+                        return;
+                    }
 
-                    // Get the oldest log (first in array)
                     const oldestCursor = this.logs[0].cursor;
+                    this.debug('loadOlderDateTimeLogs() - Loading before cursor:', oldestCursor);
                     this.loadingOlder = true;
 
                     // Remember scroll position
@@ -359,10 +395,13 @@
                     const oldScrollHeight = container.scrollHeight;
 
                     try {
-                        const response = await fetch(`${this.basePath}/logs?limit=100&before=${oldestCursor}`);
-                        if (!response.ok) throw new Error('Failed to load older logs');
+                        const response = await fetch(`${this.basePath}/logs?limit=200&before=${oldestCursor}`);
+                        if (!response.ok) {
+                            throw new Error('Failed to load older logs');
+                        }
 
                         let data = await response.json();
+                        this.debug('loadOlderDateTimeLogs() - Received:', data?.length);
 
                         // Only append if we're still in datetime search mode (prevents race condition with Clear)
                         if (this.isDateTimeSearch && data && data.length > 0) {
@@ -375,51 +414,70 @@
                                 container.scrollTop = newScrollHeight - oldScrollHeight;
                             });
                         }
-                    } catch (error) {
+                    }
+                    catch (error) {
+                        this.debug('loadOlderDateTimeLogs() - Error:', error.message);
                         this.errorMessage = error.message;
-                    } finally {
+                    }
+                    finally {
                         this.loadingOlder = false;
                     }
                 },
 
                 async loadNewerDateTimeLogs() {
-                    if (this.logs.length === 0 || this.loadingNewer) return;
+                    this.debug('loadNewerDateTimeLogs() - Called');
+                    if (this.logs.length === 0 || this.loadingNewer || this.loading) {
+                        this.debug('loadNewerDateTimeLogs() - Skipping');
+                        return;
+                    }
 
-                    // Get the newest log (last in array)
                     const newestCursor = this.logs[this.logs.length - 1].cursor;
+                    this.debug('loadNewerDateTimeLogs() - Loading after cursor:', newestCursor);
                     this.loadingNewer = true;
 
                     try {
-                        const response = await fetch(`${this.basePath}/logs?limit=100&after=${newestCursor}`);
-                        if (!response.ok) throw new Error('Failed to load newer logs');
+                        const response = await fetch(`${this.basePath}/logs?limit=200&after=${newestCursor}`);
+                        if (!response.ok) {
+                            throw new Error('Failed to load newer logs');
+                        }
 
                         let data = await response.json();
+                        this.debug('loadNewerDateTimeLogs() - Received:', data?.length);
 
-                        // Only append if we're still in datetime search mode (prevents race condition with Clear)
                         if (this.isDateTimeSearch && data && data.length > 0) {
-                            // Backend returns chronological order (oldest first), append directly
                             this.logs = [...this.logs, ...data];
-                        } else if (this.isDateTimeSearch && (!data || data.length === 0)) {
-                            // No more newer logs - we've caught up to present, switch to live tail
+                        }
+                        else if (this.isDateTimeSearch && (!data || data.length === 0)) {
+                            this.debug('loadNewerDateTimeLogs() - No more newer logs, switching to live tail');
                             this.searchDateTime = '';
                             this.isSearchMode = false;
                             this.isDateTimeSearch = false;
                             this.logs = []; // Clear old search results
                             this.startLiveTail();
                         }
-                    } catch (error) {
+                    }
+                    catch (error) {
+                        this.debug('loadNewerDateTimeLogs() - Error:', error.message);
                         this.errorMessage = error.message;
-                    } finally {
+                    }
+                    finally {
                         this.loadingNewer = false;
                     }
                 },
 
                 async performSearch() {
+                    if (this.loading) {
+                        this.debug('performSearch() - Already loading, ignoring');
+                        return;
+                    }
+
+                    this.debug('performSearch() - Stopping live tail');
                     this.stopLiveTail();
                     this.isSearchMode = true;
                     this.isDateTimeSearch = false;
 
                     if (!this.searchQuery && !this.searchDateTime) {
+                        this.debug('performSearch() - No search query or datetime, starting live tail');
                         this.isSearchMode = false;
                         this.isDateTimeSearch = false;
                         this.startLiveTail();
@@ -435,42 +493,58 @@
                         let targetTimestamp = null;
 
                         if (this.searchDateTime) {
+                            this.debug('performSearch() - DateTime search for:', this.searchDateTime);
                             this.isDateTimeSearch = true;
                             targetTimestamp = new Date(this.searchDateTime).toISOString();
+
+                            this.debug('performSearch() - Fetching datetime logs');
                             const response = await fetch(`${this.basePath}/logs/datetime?timestamp=${encodeURIComponent(targetTimestamp)}`);
-                            if (!response.ok) throw new Error('Search failed');
+                            if (!response.ok) {
+                                throw new Error('Search failed');
+                            }
                             data = await response.json();
+
+                            this.debug('performSearch() - Received datetime results:', data?.length);
                             const displayTime = new Date(this.searchDateTime).toLocaleString();
                             this.statusMessage = `Found ${data?.length || 0} logs around ${displayTime}`;
-
-                            // Data is in chronological order from backend (oldest first)
-                            // Keep it that way - don't reverse
-                        } else {
-                            // Request 201 to check if there are more
-                            const response = await fetch(`${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}&limit=201`);
-                            if (!response.ok) throw new Error('Search failed');
+                        }
+                        else {
+                            this.debug('performSearch() - Text search for:', this.searchQuery);
+                            // Request 101 to check if there are more
+                            const response = await fetch(`${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}&limit=101`);
+                            if (!response.ok) {
+                                throw new Error('Search failed');
+                            }
                             data = await response.json();
+                            this.debug('performSearch() - Received text search results:', data?.length);
 
                             // Store search time range for pagination
                             this.searchStartTime = new Date(Date.now() - 24*60*60*1000).toISOString(); // Default: last 24h
                             this.searchEndTime = new Date().toISOString();
 
-                            // If we got 201 results, there may be more
-                            if (data && data.length > 200) {
+                            // If we got 101 results, there may be more
+                            if (data && data.length > 100) {
                                 this.hasMoreSearchResults = true;
-                                data = data.slice(0, 200); // Keep only first 200
-                            } else {
+                                data = data.slice(0, 100); // Keep only first 100
+                            }
+                            else {
                                 this.hasMoreSearchResults = false;
                             }
 
                             this.statusMessage = `Found ${data?.length || 0} results${this.hasMoreSearchResults ? ' (scroll up for more)' : ''}`;
-
-                            // Reverse so newest is at bottom for text search
                             if (data && data.length > 0) {
                                 data.reverse();
                             }
                         }
 
+                        // Only update logs if live tail hasn't been restarted (prevents race with Clear button)
+                        this.debug('performSearch() - Checking liveTailActive:', this.liveTailActive);
+                        if (this.liveTailActive) {
+                            this.debug('performSearch() - Live tail is active, ignoring search results');
+                            return;
+                        }
+
+                        this.debug('performSearch() - Setting logs array, length:', data?.length);
                         this.logs = data || [];
 
                         // Scroll based on search type
@@ -481,30 +555,37 @@
                             if (targetTimestamp && this.logs.length > 0) {
                                 // For datetime search, scroll to the log closest to target time
                                 this.scrollToClosestLog(targetTimestamp);
-                            } else {
+                            }
+                            else {
                                 // For text search, scroll to bottom
                                 this.scrollToBottom();
                             }
                         });
-                    } catch (error) {
+                    }
+                    catch (error) {
                         this.errorMessage = error.message;
                         this.statusMessage = 'Error searching logs';
-                    } finally {
+                    }
+                    finally {
                         this.loading = false;
                     }
                 },
 
                 clearSearch() {
+                    this.debug('clearSearch() - Called');
+
                     this.searchQuery = '';
                     this.searchDateTime = '';
                     this.isSearchMode = false;
                     this.isDateTimeSearch = false;
-                    // Clear the logs array so loadLatestLogs treats it as first load
                     this.logs = [];
+
                     this.startLiveTail();
                 },
 
                 searchByTimestamp(timestamp) {
+                    this.debug('searchByTimestamp() - Called with timestamp:', timestamp);
+
                     // Convert ISO timestamp to datetime-local format (YYYY-MM-DDTHH:mm)
                     const date = new Date(timestamp);
                     const year = date.getFullYear();
@@ -513,18 +594,18 @@
                     const hours = String(date.getHours()).padStart(2, '0');
                     const minutes = String(date.getMinutes()).padStart(2, '0');
                     const formattedDateTime = `${year}-${month}-${day}T${hours}:${minutes}`;
+                    this.debug('searchByTimestamp() - Formatted datetime:', formattedDateTime);
 
-                    // Clear text search and set datetime search
                     this.searchQuery = '';
                     this.searchDateTime = formattedDateTime;
 
-                    // Perform the datetime search
                     this.performSearch();
                 },
 
                 handleScroll() {
                     // Ignore programmatic scrolls (from search positioning)
                     if (this.isProgrammaticScroll) {
+                        this.debug('handleScroll() - Ignoring programmatic scroll');
                         this.isProgrammaticScroll = false;
                         return;
                     }
@@ -535,39 +616,40 @@
                     const scrollingUp = currentScrollTop < this.lastScrollTop;
                     const scrollingDown = currentScrollTop > this.lastScrollTop;
                     const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
-
-                    // Skip auto-loading on first scroll event (lastScrollTop === 0 and we've scrolled somewhere)
-                    // This prevents initial scroll positioning from triggering loads
                     const isFirstScroll = this.lastScrollTop === 0 && currentScrollTop > 0;
 
-                    // Handle infinite scroll based on mode (but not on first scroll)
-                    if (!isFirstScroll && scrollingUp && currentScrollTop < 100) {
+                    if (!isFirstScroll && scrollingUp && currentScrollTop < 100 && !this.loadingOlder) {
                         if (this.isDateTimeSearch) {
                             // In datetime search mode: load older logs
                             this.loadOlderDateTimeLogs();
-                        } else if (this.isSearchMode) {
+                        }
+                        else if (this.isSearchMode) {
                             // In text search mode: load older search results if available
                             this.loadOlderSearchResults();
-                        } else {
+                        }
+                        else {
                             // In normal mode: load older logs
                             this.loadOlderLogs();
                         }
                     }
 
                     // Handle scrolling down to load newer logs (only for datetime search, and not on first scroll)
-                    if (!isFirstScroll && this.isDateTimeSearch && scrollingDown && nearBottom) {
+                    if (!isFirstScroll && this.isDateTimeSearch && scrollingDown && nearBottom && !this.loadingNewer) {
+                        this.debug('handleScroll() - Near bottom in datetime search, calling loadNewerDateTimeLogs');
                         this.loadNewerDateTimeLogs();
                     }
 
-                    // Update last scroll position
                     this.lastScrollTop = currentScrollTop;
 
                     // Only pause live tail if user actively scrolled UP (and not in search mode)
                     // Don't pause just from being not-at-bottom (could be from DOM changes)
                     if (!this.isSearchMode) {
                         if (scrollingUp && !atBottom && this.liveTailActive) {
+                            this.debug('handleScroll() - User scrolled up, stopping live tail');
                             this.stopLiveTail();
-                        } else if (atBottom && !this.liveTailActive) {
+                        }
+                        else if (atBottom && !this.liveTailActive) {
+                            this.debug('handleScroll() - Scrolled to bottom, starting live tail');
                             this.startLiveTail();
                         }
                     }
@@ -589,11 +671,12 @@
 
                 scrollToClosestLog(targetTimestamp) {
                     const container = this.$refs.logsContainer;
-                    if (!container || this.logs.length === 0) return;
+                    if (!container || this.logs.length === 0) {
+                        return;
+                    }
 
                     const targetTime = new Date(targetTimestamp).getTime();
 
-                    // Find the log closest to the target time
                     let closestIndex = 0;
                     let smallestDiff = Math.abs(new Date(this.logs[0].timestamp).getTime() - targetTime);
 
@@ -621,8 +704,13 @@
                 },
 
                 startLiveTail() {
-                    if (this.liveTailActive) return; // Already active
+                    this.debug('startLiveTail() - Called, liveTailActive before:', this.liveTailActive);
+                    if (this.liveTailActive) {
+                        this.debug('startLiveTail() - Already active, returning');
+                        return;
+                    }
 
+                    this.debug('startLiveTail() - Activating live tail');
                     this.liveTailActive = true;
                     this.loadLatestLogs();
                     this.liveTailInterval = setInterval(() => {
@@ -631,6 +719,7 @@
                 },
 
                 stopLiveTail() {
+                    this.debug('stopLiveTail() - Called');
                     this.liveTailActive = false;
                     if (this.liveTailInterval) {
                         clearInterval(this.liveTailInterval);
@@ -642,7 +731,8 @@
                     try {
                         await fetch(`${this.basePath}/auth/logout`, { method: 'POST' });
                         window.location.href = `${this.basePath}/login`;
-                    } catch (error) {
+                    }
+                    catch (error) {
                         this.errorMessage = 'Logout failed';
                     }
                 },
@@ -662,13 +752,17 @@
                 },
 
                 abbreviateLogger(logger) {
-                    if (!logger) return '';
+                    if (!logger) {
+                        return '';
+                    }
 
                     // Split by dots: org.springframework.data.SomeClass
                     const parts = logger.split('.');
 
                     // If only one part (no package), return as-is
-                    if (parts.length <= 1) return logger;
+                    if (parts.length <= 1) {
+                        return logger;
+                    }
 
                     // Abbreviate all parts except the last one
                     const abbreviated = parts.slice(0, -1).map(part => part.charAt(0)).join('.');

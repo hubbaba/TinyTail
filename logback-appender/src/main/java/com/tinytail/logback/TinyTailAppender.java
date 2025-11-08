@@ -9,11 +9,6 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 public class TinyTailAppender extends AppenderBase<ILoggingEvent> {
 
@@ -24,7 +19,6 @@ public class TinyTailAppender extends AppenderBase<ILoggingEvent> {
     private int readTimeout = 5000;
     private int maxRetries = 1;
     private int retryDelayMs = 200;
-    private ExecutorService executor;
 
     @Override
     public void start() {
@@ -38,52 +32,27 @@ public class TinyTailAppender extends AppenderBase<ILoggingEvent> {
             return;
         }
 
-        ThreadFactory threadFactory = new ThreadFactory() {
-            private final AtomicInteger counter = new AtomicInteger(0);
-
-            @Override
-            public Thread newThread(Runnable r) {
-                Thread thread = new Thread(r, "TinyTail-" + counter.incrementAndGet());
-                thread.setDaemon(true);
-                return thread;
-            }
-        };
-
-        executor = Executors.newFixedThreadPool(2, threadFactory);
         super.start();
     }
 
     @Override
-    public void stop() {
-        super.stop();
-        if (executor != null) {
-            executor.shutdown();
-            try {
-                if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
-                    executor.shutdownNow();
-                }
-            }
-            catch (InterruptedException e) {
-                executor.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
+    protected void append(ILoggingEvent event) {
+        try {
+            sendLogWithRetry(event);
+        }
+        catch (Exception e) {
+            handleError(e);
         }
     }
 
-    @Override
-    protected void append(ILoggingEvent event) {
-        if (executor == null || executor.isShutdown()) {
-            return;
+    private void handleError(Exception e) {
+        String errorMsg = "TinyTailAppender failed to send log after " + (maxRetries + 1) + " attempts: " + e.getMessage();
+        addError(errorMsg, e);
+        // Also log to stderr so it appears in console/CloudWatch logs
+        System.err.println("[TinyTailAppender] " + errorMsg);
+        if (e.getCause() != null) {
+            System.err.println("[TinyTailAppender] Caused by: " + e.getCause().getMessage());
         }
-
-        executor.submit(() -> {
-            try {
-                sendLogWithRetry(event);
-            }
-            catch (Exception e) {
-                addError("Failed to send log to TinyTail after " + (maxRetries + 1) + " attempts: " + e.getMessage());
-            }
-        });
     }
 
     private void sendLogWithRetry(ILoggingEvent event) throws IOException {
@@ -109,7 +78,8 @@ public class TinyTailAppender extends AppenderBase<ILoggingEvent> {
                             Thread.currentThread().interrupt();
                             throw new IOException("Retry interrupted", ie);
                         }
-                    } else {
+                    }
+                    else {
                         // Non-retryable error (auth, client error), fail immediately
                         throw e;
                     }

@@ -204,6 +204,7 @@
                 searchEndTime: '',
                 lastScrollTop: 0,
                 isProgrammaticScroll: false,
+                wasLiveTailingBeforeHidden: false,
                 debugEnabled: false, // Set to true to enable debug logging
 
                 debug(message, data = null) {
@@ -227,6 +228,25 @@
                 init() {
                     this.debug('init() - Starting application');
                     this.startLiveTail();
+
+                    // Handle tab visibility changes to save resources and ensure fresh data
+                    document.addEventListener('visibilitychange', () => {
+                        if (document.hidden) {
+                            this.debug('Tab hidden - pausing live tail');
+                            // Tab hidden - stop polling to save resources
+                            if (this.liveTailActive) {
+                                this.stopLiveTail();
+                                this.wasLiveTailingBeforeHidden = true;
+                            }
+                        } else {
+                            this.debug('Tab visible - resuming live tail');
+                            // Tab visible again - resume and fetch fresh data
+                            if (this.wasLiveTailingBeforeHidden) {
+                                this.wasLiveTailingBeforeHidden = false;
+                                this.startLiveTail(); // Will immediately fetch fresh logs
+                            }
+                        }
+                    });
                 },
 
                 async loadLatestLogs() {
@@ -256,6 +276,9 @@
                             return;
                         }
 
+                        // Update timestamp on every poll, even if no new logs
+                        this.statusMessage = `Last Updated: ${new Date().toLocaleTimeString('en-US', { hour12: false })}`;
+
                         if (data && data.length > 0) {
                             if (isFirstLoad) {
                                 // First load uses /logs/latest which returns newest-first, so reverse
@@ -268,7 +291,6 @@
                                 this.logs = [...this.logs, ...data];
                             }
 
-                            this.statusMessage = `Last updated: ${new Date().toLocaleTimeString()}`;
                             this.$nextTick(() => {
                                 this.scrollToBottom();
                             });
@@ -505,7 +527,7 @@
                             data = await response.json();
 
                             this.debug('performSearch() - Received datetime results:', data?.length);
-                            const displayTime = new Date(this.searchDateTime).toLocaleString();
+                            const displayTime = new Date(this.searchDateTime).toLocaleString('en-US', { hour12: false });
                             this.statusMessage = `Found ${data?.length || 0} logs around ${displayTime}`;
                         }
                         else {

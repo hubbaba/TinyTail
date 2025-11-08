@@ -29,7 +29,7 @@ TinyTail is perfect for:
 - **📧 Email alerts**: Pattern-based alerts via SES
 - **💰 Cost effective**: 0/month for <1GB logs (Free Tier) or ~$3-5/month beyond that
 - **☁️ Serverless**: No infrastructure to manage
-- **📦 Large message support**: Handles large Java stack traces (auto-chunking)
+- **📦 Large message support**: Handles large Java stack traces (>350KB split into sequential entries)
 - **🚀 Simple deployment**: One command to deploy everything
 - **⏱️ Smart pagination**: Scroll-based log navigation with ULID timestamps
 - **🎨 Modern UI**: Alpine.js + TailwindCSS with live tail mode
@@ -268,20 +268,35 @@ cat .secrets
 After deployment completes, you'll see output like:
 ```
 ================================================
-  Deployment Complete!
+  TinyTail Web UI
 ================================================
 
-Getting stack outputs...
---------------------------------------------------------------------
-|                        DescribeStacks                            |
-+------------------+-----------------------------------------------+
-|  ApiEndpoint     | https://abc123.execute-api.us-east-2.amazonaws.com/prod/ |
-|  LogCollectorEndpoint | https://abc123.execute-api.us-east-2.amazonaws.com/prod/logs/ingest |
-|  LogViewerUrl    | https://abc123.execute-api.us-east-2.amazonaws.com/prod/ |
-+------------------+-----------------------------------------------+
+URL:      https://abc123.execute-api.us-east-2.amazonaws.com/prod/
+Password: YourGeneratedPassword123
+
+================================================
+  Logback Configuration (copy/paste ready)
+================================================
+
+<appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+  <encoder>
+    <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+  </encoder>
+</appender>
+
+<appender name="TINYTAIL" class="com.tinytail.logback.TinyTailAppender">
+  <endpoint>https://abc123.execute-api.us-east-2.amazonaws.com/prod/logs/ingest</endpoint>
+  <source>my-app</source>
+  <secret>YourGeneratedSecret123</secret>
+</appender>
+
+<root level="INFO">
+  <appender-ref ref="CONSOLE" />
+  <appender-ref ref="TINYTAIL" />
+</root>
 ```
 
-Visit the **LogViewerUrl** and log in with your UI password from `.secrets`.
+Visit the Web UI URL and log in with the displayed password.
 
 ## Configuration
 
@@ -435,17 +450,16 @@ curl -X POST https://your-api-id.execute-api.us-east-2.amazonaws.com/prod/logs/i
 
 ### TinyTailLogs Table
 
-| Attribute      | Type   | Key Type       | Description                          |
-|----------------|--------|----------------|--------------------------------------|
-| pk             | String | Partition Key  | Always "LOGS" (single partition)     |
-| timestamp_seq  | String | Sort Key       | ULID#chunk_index (time-ordered)      |
-| level          | String | Attribute      | Log level (INFO, ERROR, etc.)        |
-| message        | String | Attribute      | Log message (may be chunked)         |
-| source         | String | Attribute      | Application/service name             |
-| request_id     | String | Attribute      | Request correlation ID               |
-| chunk_index    | Number | Attribute      | Chunk number for split messages      |
-| total_chunks   | Number | Attribute      | Total chunks for this message        |
-| expire_at      | Number | Attribute      | TTL timestamp (180 days)             |
+| Attribute      | Type   | Key Type       | Description                                    |
+|----------------|--------|----------------|------------------------------------------------|
+| pk             | String | Partition Key  | Always "LOGS" (single partition)               |
+| timestamp_seq  | String | Sort Key       | ULID#0 (time-ordered, unique per log entry)    |
+| level          | String | Attribute      | Log level (INFO, ERROR, etc.)                  |
+| message        | String | Attribute      | Log message (large messages split into entries with [CONTINUED x/y]) |
+| source         | String | Attribute      | Application/service name                       |
+| logger         | String | Attribute      | Logger name (e.g., com.example.MyClass)        |
+| request_id     | String | Attribute      | Request correlation ID                         |
+| expire_at      | Number | Attribute      | TTL timestamp (180 days)                       |
 
 **GSI**: `request_id-index` for tracing requests across logs
 

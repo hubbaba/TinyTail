@@ -49,6 +49,12 @@
             color: #858585;
             min-width: 120px;
             flex-shrink: 0;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+        .log-timestamp:hover {
+            color: #4ec9b0;
+            text-decoration: underline;
         }
         .log-level {
             padding: 0.125rem 0.375rem;
@@ -134,7 +140,7 @@
             <!-- Log Entries -->
             <template x-for="log in logs" :key="log.cursor">
                 <div class="log-entry">
-                    <span class="log-timestamp" x-text="formatTimestamp(log.timestamp)"></span>
+                    <span class="log-timestamp" @click="searchByTimestamp(log.timestamp)" x-text="formatTimestamp(log.timestamp)"></span>
                     <span
                         :class="{
                             'bg-gray-700 text-gray-400': log.level === 'DEBUG',
@@ -197,6 +203,7 @@
                 searchStartTime: '',
                 searchEndTime: '',
                 lastScrollTop: 0,
+                isProgrammaticScroll: false,
 
                 init() {
                     // Auto-start live tail on page load
@@ -356,7 +363,9 @@
                         if (!response.ok) throw new Error('Failed to load older logs');
 
                         let data = await response.json();
-                        if (data && data.length > 0) {
+
+                        // Only append if we're still in datetime search mode (prevents race condition with Clear)
+                        if (this.isDateTimeSearch && data && data.length > 0) {
                             // Backend returns chronological order (oldest first) - no need to reverse
                             this.logs = [...data, ...this.logs];
 
@@ -385,14 +394,17 @@
                         if (!response.ok) throw new Error('Failed to load newer logs');
 
                         let data = await response.json();
-                        if (data && data.length > 0) {
+
+                        // Only append if we're still in datetime search mode (prevents race condition with Clear)
+                        if (this.isDateTimeSearch && data && data.length > 0) {
                             // Backend returns chronological order (oldest first), append directly
                             this.logs = [...this.logs, ...data];
-                        } else {
+                        } else if (this.isDateTimeSearch && (!data || data.length === 0)) {
                             // No more newer logs - we've caught up to present, switch to live tail
                             this.searchDateTime = '';
                             this.isSearchMode = false;
                             this.isDateTimeSearch = false;
+                            this.logs = []; // Clear old search results
                             this.startLiveTail();
                         }
                     } catch (error) {
@@ -463,6 +475,9 @@
 
                         // Scroll based on search type
                         this.$nextTick(() => {
+                            // Set flag to ignore the scroll event from programmatic scrolling
+                            this.isProgrammaticScroll = true;
+
                             if (targetTimestamp && this.logs.length > 0) {
                                 // For datetime search, scroll to the log closest to target time
                                 this.scrollToClosestLog(targetTimestamp);
@@ -483,10 +498,37 @@
                     this.searchQuery = '';
                     this.searchDateTime = '';
                     this.isSearchMode = false;
+                    this.isDateTimeSearch = false;
+                    // Clear the logs array so loadLatestLogs treats it as first load
+                    this.logs = [];
                     this.startLiveTail();
                 },
 
+                searchByTimestamp(timestamp) {
+                    // Convert ISO timestamp to datetime-local format (YYYY-MM-DDTHH:mm)
+                    const date = new Date(timestamp);
+                    const year = date.getFullYear();
+                    const month = String(date.getMonth() + 1).padStart(2, '0');
+                    const day = String(date.getDate()).padStart(2, '0');
+                    const hours = String(date.getHours()).padStart(2, '0');
+                    const minutes = String(date.getMinutes()).padStart(2, '0');
+                    const formattedDateTime = `${year}-${month}-${day}T${hours}:${minutes}`;
+
+                    // Clear text search and set datetime search
+                    this.searchQuery = '';
+                    this.searchDateTime = formattedDateTime;
+
+                    // Perform the datetime search
+                    this.performSearch();
+                },
+
                 handleScroll() {
+                    // Ignore programmatic scrolls (from search positioning)
+                    if (this.isProgrammaticScroll) {
+                        this.isProgrammaticScroll = false;
+                        return;
+                    }
+
                     const container = this.$refs.logsContainer;
                     const currentScrollTop = container.scrollTop;
                     const atBottom = this.isScrolledToBottom();

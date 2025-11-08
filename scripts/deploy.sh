@@ -140,29 +140,52 @@ echo "  Deployment Complete!"
 echo "================================================"
 echo ""
 
-echo "Getting stack outputs..."
-aws cloudformation describe-stacks \
+echo "Getting deployment info..."
+
+# Extract URLs from stack outputs
+API_URL=$(aws cloudformation describe-stacks \
     --stack-name "$STACK_NAME" \
     --region "$REGION" \
     --profile "$PROFILE" \
-    --query 'Stacks[0].Outputs' \
-    --output table
+    --query 'Stacks[0].Outputs[?OutputKey==`ApiEndpoint`].OutputValue' \
+    --output text)
+
+UI_URL=$(aws cloudformation describe-stacks \
+    --stack-name "$STACK_NAME" \
+    --region "$REGION" \
+    --profile "$PROFILE" \
+    --query 'Stacks[0].Outputs[?OutputKey==`LogViewerUrl`].OutputValue' \
+    --output text)
 
 echo ""
 echo "================================================"
-echo "  Configuration for logback-appender"
+echo "  TinyTail Web UI"
 echo "================================================"
 echo ""
-echo "Add this to your logback.xml:"
+echo "URL:      $UI_URL"
+echo "Password: $UI_PASSWORD"
+echo ""
+
+echo "================================================"
+echo "  Logback Configuration (copy/paste ready)"
+echo "================================================"
+echo ""
+echo "<appender name=\"CONSOLE\" class=\"ch.qos.logback.core.ConsoleAppender\">"
+echo "  <encoder>"
+echo "    <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>"
+echo "  </encoder>"
+echo "</appender>"
 echo ""
 echo "<appender name=\"TINYTAIL\" class=\"com.tinytail.logback.TinyTailAppender\">"
-echo "  <endpoint>YOUR-API-ENDPOINT/logs/ingest</endpoint>"
+echo "  <endpoint>${API_URL}logs/ingest</endpoint>"
 echo "  <source>my-app</source>"
 echo "  <secret>$INGEST_SECRET</secret>"
 echo "</appender>"
 echo ""
-echo "Or set environment variable:"
-echo "  export TINYTAIL_SECRET=\"$INGEST_SECRET\""
+echo "<root level=\"INFO\">"
+echo "  <appender-ref ref=\"CONSOLE\" />"
+echo "  <appender-ref ref=\"TINYTAIL\" />"
+echo "</root>"
 echo ""
 echo "================================================"
 echo ""

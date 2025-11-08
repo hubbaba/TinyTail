@@ -47,7 +47,7 @@
         }
         .log-timestamp {
             color: #858585;
-            min-width: 80px;
+            min-width: 120px;
             flex-shrink: 0;
         }
         .log-level {
@@ -98,12 +98,13 @@
         <div class="bg-vscode-panel p-4 rounded mb-5">
             <!-- Search & DateTime -->
             <div class="flex flex-wrap gap-2">
-                <input type="text" x-model="searchQuery" @keydown.enter="performSearch" placeholder="Search logs..." class="flex-1 min-w-[200px] bg-gray-700 border border-vscode-border text-vscode-text px-3 py-2 rounded focus:ring-2 focus:ring-vscode-accent focus:outline-none">
-                <input type="datetime-local" x-model="searchDateTime" class="bg-gray-700 border border-vscode-border text-vscode-text px-3 py-2 rounded focus:ring-2 focus:ring-vscode-accent focus:outline-none" step="60">
-                <button @click="performSearch" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition">
-                    Search
+                <input type="text" x-model="searchQuery" @keydown.enter="performSearch" :disabled="loading" placeholder="Search logs..." class="flex-1 min-w-[200px] bg-gray-700 border border-vscode-border text-vscode-text px-3 py-2 rounded focus:ring-2 focus:ring-vscode-accent focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
+                <input type="datetime-local" x-model="searchDateTime" :disabled="loading" class="bg-gray-700 border border-vscode-border text-vscode-text px-3 py-2 rounded focus:ring-2 focus:ring-vscode-accent focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed" step="60">
+                <button @click="performSearch" :disabled="loading" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span x-show="!loading">Search</span>
+                    <span x-show="loading">Searching...</span>
                 </button>
-                <button @click="clearSearch" class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded transition">
+                <button @click="clearSearch" :disabled="loading" class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded transition disabled:opacity-50 disabled:cursor-not-allowed">
                     Clear
                 </button>
             </div>
@@ -114,6 +115,10 @@
         </div>
         <!-- Logs Container -->
         <div x-ref="logsContainer" @scroll="handleScroll" class="border border-vscode-border rounded overflow-auto" style="max-height: calc(100vh - 250px);">
+            <!-- All search results loaded indicator -->
+            <div x-show="isSearchMode && !hasMoreSearchResults && !loadingOlder && logs.length > 0" class="text-center py-2 text-vscode-comment text-xs bg-vscode-panel border-b border-vscode-border">
+                All matching results loaded
+            </div>
             <!-- Loading older logs indicator -->
             <div x-show="loadingOlder" class="text-center py-2 text-vscode-comment text-xs bg-vscode-panel">
                 Loading older logs...
@@ -147,6 +152,10 @@
                     </div>
                 </div>
             </template>
+            <!-- Loading newer logs indicator -->
+            <div x-show="loadingNewer" class="text-center py-2 text-vscode-comment text-xs bg-vscode-panel">
+                Loading newer logs...
+            </div>
         </div>
         <!-- Status bar -->
         <div class="mt-2 text-center text-vscode-comment text-xs">
@@ -174,6 +183,7 @@
                 logs: [],
                 loading: false,
                 loadingOlder: false,
+                loadingNewer: false,
                 liveTailActive: false,
                 liveTailInterval: null,
                 searchQuery: '',
@@ -182,6 +192,10 @@
                 statusMessage: '',
                 basePath: getBasePath(),
                 isSearchMode: false,
+                isDateTimeSearch: false,
+                hasMoreSearchResults: false,
+                searchStartTime: '',
+                searchEndTime: '',
                 lastScrollTop: 0,
 
                 init() {
@@ -195,7 +209,17 @@
                     this.errorMessage = '';
 
                     try {
-                        const response = await fetch(`${this.basePath}/logs/latest?limit=200`);
+                        let url;
+                        if (isFirstLoad) {
+                            // On first load, get the latest 200 logs
+                            url = `${this.basePath}/logs/latest?limit=200`;
+                        } else {
+                            // On subsequent polls, only get logs after the newest one we have
+                            const newestCursor = this.logs[this.logs.length - 1].cursor;
+                            url = `${this.basePath}/logs?limit=200&after=${newestCursor}`;
+                        }
+
+                        const response = await fetch(url);
                         if (response.status === 302 || response.redirected) {
                             window.location.href = `${this.basePath}/login`;
                             return;
@@ -211,9 +235,16 @@
                         }
 
                         if (data && data.length > 0) {
-                            // Reverse so newest is at bottom
-                            data.reverse();
-                            this.logs = data;
+                            if (isFirstLoad) {
+                                // First load uses /logs/latest which returns newest-first, so reverse
+                                data.reverse();
+                                this.logs = data;
+                            } else {
+                                // Subsequent polls use /logs?after=X which returns chronological order (oldest-first)
+                                // Append directly without reversing
+                                this.logs = [...this.logs, ...data];
+                            }
+
                             this.statusMessage = `Last updated: ${new Date().toLocaleTimeString()}`;
 
                             // Auto-scroll to bottom (only happens if live tail active or first load)
@@ -246,8 +277,7 @@
 
                         let data = await response.json();
                         if (data && data.length > 0) {
-                            // Reverse and prepend to beginning of array
-                            data.reverse();
+                            // Backend returns chronological order (oldest first) - no need to reverse
                             this.logs = [...data, ...this.logs];
 
                             // Maintain scroll position
@@ -263,43 +293,184 @@
                     }
                 },
 
+                async loadOlderSearchResults() {
+                    if (this.logs.length === 0 || this.loadingOlder || !this.hasMoreSearchResults) return;
+
+                    // Get the oldest log (first in array since reversed)
+                    const oldestCursor = this.logs[0].cursor;
+                    this.loadingOlder = true;
+
+                    // Remember scroll position
+                    const container = this.$refs.logsContainer;
+                    const oldScrollHeight = container.scrollHeight;
+
+                    try {
+                        // Request 201 to check if there are more
+                        const url = `${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}&limit=201&before=${oldestCursor}&start=${encodeURIComponent(this.searchStartTime)}&end=${encodeURIComponent(this.searchEndTime)}`;
+                        const response = await fetch(url);
+                        if (!response.ok) throw new Error('Failed to load older search results');
+
+                        let data = await response.json();
+                        if (data && data.length > 0) {
+                            // Check if there are more results beyond this batch
+                            if (data.length > 200) {
+                                this.hasMoreSearchResults = true;
+                                data = data.slice(0, 200);
+                            } else {
+                                this.hasMoreSearchResults = false;
+                            }
+
+                            // Reverse and prepend to beginning of array
+                            data.reverse();
+                            this.logs = [...data, ...this.logs];
+
+                            // Maintain scroll position
+                            this.$nextTick(() => {
+                                const newScrollHeight = container.scrollHeight;
+                                container.scrollTop = newScrollHeight - oldScrollHeight;
+                            });
+                        } else {
+                            // No more results
+                            this.hasMoreSearchResults = false;
+                        }
+                    } catch (error) {
+                        this.errorMessage = error.message;
+                    } finally {
+                        this.loadingOlder = false;
+                    }
+                },
+
+                async loadOlderDateTimeLogs() {
+                    if (this.logs.length === 0 || this.loadingOlder) return;
+
+                    // Get the oldest log (first in array)
+                    const oldestCursor = this.logs[0].cursor;
+                    this.loadingOlder = true;
+
+                    // Remember scroll position
+                    const container = this.$refs.logsContainer;
+                    const oldScrollHeight = container.scrollHeight;
+
+                    try {
+                        const response = await fetch(`${this.basePath}/logs?limit=100&before=${oldestCursor}`);
+                        if (!response.ok) throw new Error('Failed to load older logs');
+
+                        let data = await response.json();
+                        if (data && data.length > 0) {
+                            // Backend returns chronological order (oldest first) - no need to reverse
+                            this.logs = [...data, ...this.logs];
+
+                            // Maintain scroll position
+                            this.$nextTick(() => {
+                                const newScrollHeight = container.scrollHeight;
+                                container.scrollTop = newScrollHeight - oldScrollHeight;
+                            });
+                        }
+                    } catch (error) {
+                        this.errorMessage = error.message;
+                    } finally {
+                        this.loadingOlder = false;
+                    }
+                },
+
+                async loadNewerDateTimeLogs() {
+                    if (this.logs.length === 0 || this.loadingNewer) return;
+
+                    // Get the newest log (last in array)
+                    const newestCursor = this.logs[this.logs.length - 1].cursor;
+                    this.loadingNewer = true;
+
+                    try {
+                        const response = await fetch(`${this.basePath}/logs?limit=100&after=${newestCursor}`);
+                        if (!response.ok) throw new Error('Failed to load newer logs');
+
+                        let data = await response.json();
+                        if (data && data.length > 0) {
+                            // Backend returns chronological order (oldest first), append directly
+                            this.logs = [...this.logs, ...data];
+                        } else {
+                            // No more newer logs - we've caught up to present, switch to live tail
+                            this.searchDateTime = '';
+                            this.isSearchMode = false;
+                            this.isDateTimeSearch = false;
+                            this.startLiveTail();
+                        }
+                    } catch (error) {
+                        this.errorMessage = error.message;
+                    } finally {
+                        this.loadingNewer = false;
+                    }
+                },
+
                 async performSearch() {
                     this.stopLiveTail();
                     this.isSearchMode = true;
+                    this.isDateTimeSearch = false;
 
                     if (!this.searchQuery && !this.searchDateTime) {
                         this.isSearchMode = false;
+                        this.isDateTimeSearch = false;
                         this.startLiveTail();
                         return;
                     }
 
                     this.loading = true;
                     this.errorMessage = '';
+                    this.hasMoreSearchResults = false;
 
                     try {
                         let data;
+                        let targetTimestamp = null;
+
                         if (this.searchDateTime) {
-                            const timestamp = new Date(this.searchDateTime).toISOString();
-                            const response = await fetch(`${this.basePath}/logs/datetime?timestamp=${encodeURIComponent(timestamp)}`);
+                            this.isDateTimeSearch = true;
+                            targetTimestamp = new Date(this.searchDateTime).toISOString();
+                            const response = await fetch(`${this.basePath}/logs/datetime?timestamp=${encodeURIComponent(targetTimestamp)}`);
                             if (!response.ok) throw new Error('Search failed');
                             data = await response.json();
                             const displayTime = new Date(this.searchDateTime).toLocaleString();
                             this.statusMessage = `Found ${data?.length || 0} logs around ${displayTime}`;
+
+                            // Data is in chronological order from backend (oldest first)
+                            // Keep it that way - don't reverse
                         } else {
-                            const response = await fetch(`${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}`);
+                            // Request 201 to check if there are more
+                            const response = await fetch(`${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}&limit=201`);
                             if (!response.ok) throw new Error('Search failed');
                             data = await response.json();
-                            this.statusMessage = `Found ${data?.length || 0} results`;
+
+                            // Store search time range for pagination
+                            this.searchStartTime = new Date(Date.now() - 24*60*60*1000).toISOString(); // Default: last 24h
+                            this.searchEndTime = new Date().toISOString();
+
+                            // If we got 201 results, there may be more
+                            if (data && data.length > 200) {
+                                this.hasMoreSearchResults = true;
+                                data = data.slice(0, 200); // Keep only first 200
+                            } else {
+                                this.hasMoreSearchResults = false;
+                            }
+
+                            this.statusMessage = `Found ${data?.length || 0} results${this.hasMoreSearchResults ? ' (scroll up for more)' : ''}`;
+
+                            // Reverse so newest is at bottom for text search
+                            if (data && data.length > 0) {
+                                data.reverse();
+                            }
                         }
 
-                        // Reverse so newest is at bottom
-                        if (data && data.length > 0) {
-                            data.reverse();
-                        }
                         this.logs = data || [];
 
-                        // Scroll to bottom after search
-                        this.$nextTick(() => this.scrollToBottom());
+                        // Scroll based on search type
+                        this.$nextTick(() => {
+                            if (targetTimestamp && this.logs.length > 0) {
+                                // For datetime search, scroll to the log closest to target time
+                                this.scrollToClosestLog(targetTimestamp);
+                            } else {
+                                // For text search, scroll to bottom
+                                this.scrollToBottom();
+                            }
+                        });
                     } catch (error) {
                         this.errorMessage = error.message;
                         this.statusMessage = 'Error searching logs';
@@ -316,27 +487,47 @@
                 },
 
                 handleScroll() {
-                    if (this.isSearchMode) return; // No infinite scroll in search mode
-
                     const container = this.$refs.logsContainer;
                     const currentScrollTop = container.scrollTop;
                     const atBottom = this.isScrolledToBottom();
                     const scrollingUp = currentScrollTop < this.lastScrollTop;
+                    const scrollingDown = currentScrollTop > this.lastScrollTop;
+                    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
 
-                    // Only load older logs if scrolling UP and near top
-                    if (scrollingUp && currentScrollTop < 100) {
-                        this.loadOlderLogs();
+                    // Skip auto-loading on first scroll event (lastScrollTop === 0 and we've scrolled somewhere)
+                    // This prevents initial scroll positioning from triggering loads
+                    const isFirstScroll = this.lastScrollTop === 0 && currentScrollTop > 0;
+
+                    // Handle infinite scroll based on mode (but not on first scroll)
+                    if (!isFirstScroll && scrollingUp && currentScrollTop < 100) {
+                        if (this.isDateTimeSearch) {
+                            // In datetime search mode: load older logs
+                            this.loadOlderDateTimeLogs();
+                        } else if (this.isSearchMode) {
+                            // In text search mode: load older search results if available
+                            this.loadOlderSearchResults();
+                        } else {
+                            // In normal mode: load older logs
+                            this.loadOlderLogs();
+                        }
+                    }
+
+                    // Handle scrolling down to load newer logs (only for datetime search, and not on first scroll)
+                    if (!isFirstScroll && this.isDateTimeSearch && scrollingDown && nearBottom) {
+                        this.loadNewerDateTimeLogs();
                     }
 
                     // Update last scroll position
                     this.lastScrollTop = currentScrollTop;
 
-                    // Only pause live tail if user actively scrolled UP
+                    // Only pause live tail if user actively scrolled UP (and not in search mode)
                     // Don't pause just from being not-at-bottom (could be from DOM changes)
-                    if (scrollingUp && !atBottom && this.liveTailActive) {
-                        this.stopLiveTail();
-                    } else if (atBottom && !this.liveTailActive && !this.isSearchMode) {
-                        this.startLiveTail();
+                    if (!this.isSearchMode) {
+                        if (scrollingUp && !atBottom && this.liveTailActive) {
+                            this.stopLiveTail();
+                        } else if (atBottom && !this.liveTailActive) {
+                            this.startLiveTail();
+                        }
                     }
                 },
 
@@ -351,6 +542,39 @@
                     const container = this.$refs.logsContainer;
                     if (container) {
                         container.scrollTop = container.scrollHeight;
+                    }
+                },
+
+                scrollToClosestLog(targetTimestamp) {
+                    const container = this.$refs.logsContainer;
+                    if (!container || this.logs.length === 0) return;
+
+                    const targetTime = new Date(targetTimestamp).getTime();
+
+                    // Find the log closest to the target time
+                    let closestIndex = 0;
+                    let smallestDiff = Math.abs(new Date(this.logs[0].timestamp).getTime() - targetTime);
+
+                    for (let i = 1; i < this.logs.length; i++) {
+                        const diff = Math.abs(new Date(this.logs[i].timestamp).getTime() - targetTime);
+                        if (diff < smallestDiff) {
+                            smallestDiff = diff;
+                            closestIndex = i;
+                        }
+                    }
+
+                    // Get all log entry elements
+                    const logEntries = container.querySelectorAll('.log-entry');
+                    if (logEntries.length > closestIndex) {
+                        const targetElement = logEntries[closestIndex];
+
+                        // Calculate position to center the element
+                        const elementTop = targetElement.offsetTop;
+                        const elementHeight = targetElement.offsetHeight;
+                        const containerHeight = container.clientHeight;
+
+                        // Scroll to center the element in the viewport
+                        container.scrollTop = elementTop - (containerHeight / 2) + (elementHeight / 2);
                     }
                 },
 
@@ -382,13 +606,17 @@
                 },
 
                 formatTimestamp(timestamp) {
-                    // Format as HH:MM:SS for compact display
-                    return new Date(timestamp).toLocaleTimeString('en-US', {
+                    // Format as "Nov 08 HH:MM:SS"
+                    const date = new Date(timestamp);
+                    const month = date.toLocaleDateString('en-US', { month: 'short' });
+                    const day = String(date.getDate()).padStart(2, '0');
+                    const time = date.toLocaleTimeString('en-US', {
                         hour12: false,
                         hour: '2-digit',
                         minute: '2-digit',
                         second: '2-digit'
                     });
+                    return `${month} ${day} ${time}`;
                 },
 
                 abbreviateLogger(logger) {

@@ -316,23 +316,24 @@ func (h *Handler) getLogsByDateTime(ctx context.Context, request events.APIGatew
 		return jsonResponse(http.StatusBadRequest, map[string]string{"error": "Invalid timestamp format. Use RFC3339"})
 	}
 
-	// Get 100 logs before the target time
-	// We search from 24 hours before up to target time, limited to 100 results
-	logsBefore, err := h.logStore.GetLogsByTimeRange(ctx, targetTime.Add(-24*time.Hour), targetTime, 100)
+	// Convert target time to ULID cursor
+	targetCursor := h.logStore.TimeToCursor(targetTime)
+
+	// Get 100 logs before the target cursor (no time window - just the 100 logs before this cursor)
+	logsBefore, err := h.logStore.GetLogs(ctx, 100, "", targetCursor)
 	if err != nil {
 		fmt.Printf("ERROR: Failed to query logs before datetime: %v\n", err)
 		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": "Failed to query logs before datetime"})
 	}
 
-	// Get 100 logs after the target time
-	// We search from target time up to 24 hours after, limited to 100 results
-	logsAfter, err := h.logStore.GetLogsByTimeRange(ctx, targetTime, targetTime.Add(24*time.Hour), 100)
+	// Get 100 logs after the target cursor (no time window - just the 100 logs after this cursor)
+	logsAfter, err := h.logStore.GetLogs(ctx, 100, targetCursor, "")
 	if err != nil {
 		fmt.Printf("ERROR: Failed to query logs after datetime: %v\n", err)
 		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": "Failed to query logs after datetime"})
 	}
 
-	// Combine: logs before + logs after = up to 200 logs centered around target time
+	// Combine: logs before (already in chronological order) + logs after (already in chronological order)
 	allLogs := append(logsBefore, logsAfter...)
 
 	return jsonResponse(http.StatusOK, allLogs)
@@ -342,6 +343,8 @@ func (h *Handler) searchLogs(ctx context.Context, request events.APIGatewayProxy
 	query := request.QueryStringParameters["q"]
 	startStr := request.QueryStringParameters["start"]
 	endStr := request.QueryStringParameters["end"]
+	limitStr := request.QueryStringParameters["limit"]
+	beforeCursor := request.QueryStringParameters["before"]
 
 	var startTime, endTime time.Time
 	var err error
@@ -364,7 +367,17 @@ func (h *Handler) searchLogs(ctx context.Context, request events.APIGatewayProxy
 		endTime = time.Now()
 	}
 
-	logs, err := h.logStore.SearchLogs(ctx, query, startTime, endTime)
+	// Parse limit parameter
+	limit := 0
+	if limitStr != "" {
+		parsedLimit, err := strconv.Atoi(limitStr)
+		if err != nil || parsedLimit < 1 {
+			return jsonResponse(http.StatusBadRequest, map[string]string{"error": "Invalid limit parameter"})
+		}
+		limit = parsedLimit
+	}
+
+	logs, err := h.logStore.SearchLogsWithCursor(ctx, query, startTime, endTime, beforeCursor, limit)
 	if err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("Failed to search logs: %v", err)})
 	}

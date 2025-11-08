@@ -41,8 +41,6 @@ type dynamoDBLogItem struct {
 	Source       string `dynamodbav:"source"`
 	Logger       string `dynamodbav:"logger"`
 	RequestID    string `dynamodbav:"request_id"`
-	ChunkIndex   int    `dynamodbav:"chunk_index,omitempty"`
-	TotalChunks  int    `dynamodbav:"total_chunks,omitempty"`
 	ExpireAt     int64  `dynamodbav:"expire_at,omitempty"`
 }
 
@@ -58,21 +56,60 @@ func NewLogStore(client *dynamodb.Client, tableName string) *LogStore {
 	}
 }
 
-func (s *LogStore) StoreLogEntry(ctx context.Context, entry *LogEntry) error {
-	id := ulid.MustNew(ulid.Timestamp(entry.Timestamp), rand.Reader)
-	ulidStr := id.String()
-
-	messageBytes := []byte(entry.Message)
-	messageSize := len(messageBytes)
-
-	if messageSize <= MaxMessageSize {
-		return s.storeSingleItem(ctx, entry, ulidStr, 0, 1)
-	}
-
-	return s.storeChunkedItems(ctx, entry, ulidStr, messageBytes)
+// TimeToCursor converts a time.Time to a ULID cursor string
+func (s *LogStore) TimeToCursor(t time.Time) string {
+	return ulid.MustNew(ulid.Timestamp(t), nil).String()
 }
 
-func (s *LogStore) storeSingleItem(ctx context.Context, entry *LogEntry, ulidStr string, chunkIndex, totalChunks int) error {
+func (s *LogStore) StoreLogEntry(ctx context.Context, entry *LogEntry) error {
+	messageBytes := []byte(entry.Message)
+
+	// If message fits in one entry, store it directly
+	if len(messageBytes) <= MaxMessageSize {
+		id := ulid.MustNew(ulid.Timestamp(entry.Timestamp), rand.Reader)
+		return s.storeSingleItem(ctx, entry, id.String())
+	}
+
+	// Split large message into multiple separate log entries with sequential timestamps
+	numParts := (len(messageBytes) + MaxMessageSize - 1) / MaxMessageSize
+	baseTimestamp := entry.Timestamp
+
+	for i := 0; i < numParts; i++ {
+		start := i * MaxMessageSize
+		end := start + MaxMessageSize
+		if end > len(messageBytes) {
+			end = len(messageBytes)
+		}
+
+		// Create a new log entry for this part
+		partEntry := &LogEntry{
+			Level:     entry.Level,
+			Source:    entry.Source,
+			Logger:    entry.Logger,
+			RequestID: entry.RequestID,
+			Timestamp: baseTimestamp.Add(time.Duration(i) * time.Millisecond), // Sequential timestamps
+		}
+
+		// Add continuation markers
+		if i == 0 {
+			partEntry.Message = string(messageBytes[start:end]) + fmt.Sprintf(" [CONTINUED %d/%d]", i+1, numParts)
+		} else if i == numParts-1 {
+			partEntry.Message = fmt.Sprintf("[CONTINUED %d/%d] ", i+1, numParts) + string(messageBytes[start:end])
+		} else {
+			partEntry.Message = fmt.Sprintf("[CONTINUED %d/%d] ", i+1, numParts) + string(messageBytes[start:end]) + fmt.Sprintf(" [CONTINUED %d/%d]", i+1, numParts)
+		}
+
+		// Generate unique ULID for each part
+		id := ulid.MustNew(ulid.Timestamp(partEntry.Timestamp), rand.Reader)
+		if err := s.storeSingleItem(ctx, partEntry, id.String()); err != nil {
+			return fmt.Errorf("failed to store part %d: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+func (s *LogStore) storeSingleItem(ctx context.Context, entry *LogEntry, ulidStr string) error {
 	expireAt := time.Now().Add(TTLDays * 24 * time.Hour).Unix()
 
 	// Use default request_id if empty (DynamoDB GSI requires non-empty strings)
@@ -83,15 +120,13 @@ func (s *LogStore) storeSingleItem(ctx context.Context, entry *LogEntry, ulidStr
 
 	item := dynamoDBLogItem{
 		PK:           PartitionKey,
-		TimestampSeq: fmt.Sprintf("%s#%d", ulidStr, chunkIndex),
+		TimestampSeq: ulidStr + "#0", // Keep #0 suffix for backward compatibility
 		Timestamp:    entry.Timestamp.Format(time.RFC3339Nano),
 		Level:        entry.Level,
 		Message:      entry.Message,
 		Source:       entry.Source,
 		Logger:       entry.Logger,
 		RequestID:    requestID,
-		ChunkIndex:   chunkIndex,
-		TotalChunks:  totalChunks,
 		ExpireAt:     expireAt,
 	}
 
@@ -106,56 +141,6 @@ func (s *LogStore) storeSingleItem(ctx context.Context, entry *LogEntry, ulidStr
 	})
 
 	return err
-}
-
-func (s *LogStore) storeChunkedItems(ctx context.Context, entry *LogEntry, ulidStr string, messageBytes []byte) error {
-	totalChunks := (len(messageBytes) + MaxMessageSize - 1) / MaxMessageSize
-	expireAt := time.Now().Add(TTLDays * 24 * time.Hour).Unix()
-
-	// Use default request_id if empty (DynamoDB GSI requires non-empty strings)
-	requestID := entry.RequestID
-	if requestID == "" {
-		requestID = "none"
-	}
-
-	for i := 0; i < totalChunks; i++ {
-		start := i * MaxMessageSize
-		end := start + MaxMessageSize
-		if end > len(messageBytes) {
-			end = len(messageBytes)
-		}
-
-		chunk := string(messageBytes[start:end])
-
-		item := dynamoDBLogItem{
-			PK:           PartitionKey,
-			TimestampSeq: fmt.Sprintf("%s#%d", ulidStr, i),
-			Timestamp:    entry.Timestamp.Format(time.RFC3339Nano),
-			Level:        entry.Level,
-			Message:      chunk,
-			Source:       entry.Source,
-			Logger:       entry.Logger,
-			RequestID:    requestID,
-			ChunkIndex:   i,
-			TotalChunks:  totalChunks,
-			ExpireAt:     expireAt,
-		}
-
-		av, err := attributevalue.MarshalMap(item)
-		if err != nil {
-			return fmt.Errorf("failed to marshal chunk %d: %w", i, err)
-		}
-
-		_, err = s.client.PutItem(ctx, &dynamodb.PutItemInput{
-			TableName: aws.String(s.tableName),
-			Item:      av,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to store chunk %d: %w", i, err)
-		}
-	}
-
-	return nil
 }
 
 func (s *LogStore) GetRecentLogs(ctx context.Context, minutes int) ([]LogEntry, error) {
@@ -190,6 +175,60 @@ func (s *LogStore) SearchLogsWithLimit(ctx context.Context, query string, startT
 		return logs, nil
 	}
 
+	var filtered []LogEntry
+	lowerQuery := strings.ToLower(query)
+	for _, log := range logs {
+		if strings.Contains(strings.ToLower(log.Message), lowerQuery) ||
+			strings.Contains(strings.ToLower(log.Level), lowerQuery) ||
+			strings.Contains(strings.ToLower(log.Source), lowerQuery) {
+			filtered = append(filtered, log)
+			if limit > 0 && len(filtered) >= limit {
+				break
+			}
+		}
+	}
+
+	return filtered, nil
+}
+
+func (s *LogStore) SearchLogsWithCursor(ctx context.Context, query string, startTime, endTime time.Time, beforeCursor string, limit int) ([]LogEntry, error) {
+	// If beforeCursor is provided, adjust endTime to be before that cursor
+	effectiveEndTime := endTime
+	if beforeCursor != "" {
+		// Parse ULID from cursor to get timestamp
+		cursorULID, err := ulid.Parse(beforeCursor)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cursor: %w", err)
+		}
+		// Set endTime to the cursor's timestamp
+		effectiveEndTime = ulid.Time(cursorULID.Time())
+	}
+
+	logs, err := s.queryLogsByTimeRange(ctx, startTime, effectiveEndTime)
+	if err != nil {
+		return nil, err
+	}
+
+	// If we have a cursor, filter out logs that are >= the cursor
+	if beforeCursor != "" {
+		var filtered []LogEntry
+		for _, log := range logs {
+			if log.Cursor < beforeCursor {
+				filtered = append(filtered, log)
+			}
+		}
+		logs = filtered
+	}
+
+	// If no query string, return all logs (with limit if specified)
+	if query == "" {
+		if limit > 0 && len(logs) > limit {
+			return logs[:limit], nil
+		}
+		return logs, nil
+	}
+
+	// Apply search filter
 	var filtered []LogEntry
 	lowerQuery := strings.ToLower(query)
 	for _, log := range logs {
@@ -241,8 +280,7 @@ func (s *LogStore) queryLogsByTimeRange(ctx context.Context, startTime, endTime 
 }
 
 func (s *LogStore) unmarshalAndReassemble(items []map[string]types.AttributeValue) ([]LogEntry, error) {
-	chunkedMessages := make(map[string][]dynamoDBLogItem)
-	var singleMessages []dynamoDBLogItem
+	var logs []LogEntry
 
 	for _, item := range items {
 		var dbItem dynamoDBLogItem
@@ -251,42 +289,6 @@ func (s *LogStore) unmarshalAndReassemble(items []map[string]types.AttributeValu
 			return nil, fmt.Errorf("failed to unmarshal item: %w", err)
 		}
 
-		if dbItem.TotalChunks > 1 {
-			ulidPart := strings.Split(dbItem.TimestampSeq, "#")[0]
-			chunkedMessages[ulidPart] = append(chunkedMessages[ulidPart], dbItem)
-		} else {
-			singleMessages = append(singleMessages, dbItem)
-		}
-	}
-
-	var logs []LogEntry
-
-	for _, chunks := range chunkedMessages {
-		if len(chunks) == 0 {
-			continue
-		}
-
-		firstChunk := chunks[0]
-		var fullMessage strings.Builder
-		for _, chunk := range chunks {
-			fullMessage.WriteString(chunk.Message)
-		}
-
-		timestamp, _ := time.Parse(time.RFC3339Nano, firstChunk.Timestamp)
-		ulidCursor := strings.Split(firstChunk.TimestampSeq, "#")[0]
-
-		logs = append(logs, LogEntry{
-			Level:     firstChunk.Level,
-			Message:   fullMessage.String(),
-			Source:    firstChunk.Source,
-			Logger:    firstChunk.Logger,
-			Timestamp: timestamp,
-			RequestID: firstChunk.RequestID,
-			Cursor:    ulidCursor,
-		})
-	}
-
-	for _, dbItem := range singleMessages {
 		timestamp, _ := time.Parse(time.RFC3339Nano, dbItem.Timestamp)
 		ulidCursor := strings.Split(dbItem.TimestampSeq, "#")[0]
 
@@ -343,7 +345,7 @@ func (s *LogStore) GetLogs(ctx context.Context, limit int, afterCursor, beforeCu
 		KeyConditionExpression:    aws.String(keyCondition),
 		ExpressionAttributeValues: expressionValues,
 		ScanIndexForward:          aws.Bool(scanForward),
-		Limit:                     aws.Int32(int32(limit * 2)),
+		Limit:                     aws.Int32(int32(limit)),
 	}
 
 	output, err := s.client.Query(ctx, input)
@@ -370,6 +372,14 @@ func (s *LogStore) GetLogs(ctx context.Context, limit int, afterCursor, beforeCu
 }
 
 func (s *LogStore) GetLogsByTimeRange(ctx context.Context, startTime, endTime time.Time, limit int) ([]LogEntry, error) {
+	return s.getLogsByTimeRangeWithDirection(ctx, startTime, endTime, limit, false)
+}
+
+func (s *LogStore) GetLogsByTimeRangeForward(ctx context.Context, startTime, endTime time.Time, limit int) ([]LogEntry, error) {
+	return s.getLogsByTimeRangeWithDirection(ctx, startTime, endTime, limit, true)
+}
+
+func (s *LogStore) getLogsByTimeRangeWithDirection(ctx context.Context, startTime, endTime time.Time, limit int, scanForward bool) ([]LogEntry, error) {
 	startULID := ulid.MustNew(ulid.Timestamp(startTime), nil)
 	endULID := ulid.MustNew(ulid.Timestamp(endTime), nil)
 
@@ -381,7 +391,7 @@ func (s *LogStore) GetLogsByTimeRange(ctx context.Context, startTime, endTime ti
 			":start": &types.AttributeValueMemberS{Value: startULID.String() + "#0"},
 			":end":   &types.AttributeValueMemberS{Value: endULID.String() + "#999"},
 		},
-		ScanIndexForward: aws.Bool(false),
+		ScanIndexForward: aws.Bool(scanForward),
 		Limit:            aws.Int32(int32(limit * 2)),
 	}
 

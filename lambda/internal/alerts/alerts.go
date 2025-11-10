@@ -208,7 +208,8 @@ func (a *AlertHandler) sendAlertEmail(ctx context.Context, rule AlertRule, logs 
 			entry.Timestamp.Format("2006-01-02 15:04:05"),
 			entry.Level,
 			entry.Source))
-		body.WriteString(fmt.Sprintf("%s\n\n", entry.Message))
+		body.WriteString(fmt.Sprintf("%s\n", entry.Message))
+		body.WriteString(strings.Repeat("#", 80) + "\n\n")
 	}
 
 	if truncated {

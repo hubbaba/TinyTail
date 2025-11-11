@@ -19,6 +19,9 @@
                             accent: '#4ec9b0',
                             blue: '#569cd6',
                             comment: '#858585',
+                            button: '#0e639c',
+                            'button-foreground': '#ffffff',
+                            'button-hover': '#1177bb',
                         }
                     }
                 }
@@ -133,8 +136,20 @@
             <div x-show="loading && logs.length === 0" class="text-center py-10 text-vscode-comment">
                 Loading logs...
             </div>
-            <!-- Empty State -->
-            <div x-show="!loading && logs.length === 0" class="text-center py-10 text-vscode-comment">
+            <!-- Empty State with Load More option for search -->
+            <div x-show="!loading && logs.length === 0 && isSearchMode && hasMoreSearchResults" class="text-center py-10">
+                <div class="text-vscode-comment mb-4">
+                    No matching logs found yet.
+                </div>
+                <button
+                    @click="loadOlderSearchResults()"
+                    :disabled="loadingOlder"
+                    class="px-4 py-2 bg-vscode-button text-vscode-button-foreground hover:bg-vscode-button-hover disabled:opacity-50 disabled:cursor-not-allowed rounded"
+                    x-text="loadingOlder ? 'Searching older logs...' : 'Search logs before ' + getContinuationTimestamp()">
+                </button>
+            </div>
+            <!-- Empty State (no search or no more results) -->
+            <div x-show="!loading && logs.length === 0 && (!isSearchMode || !hasMoreSearchResults)" class="text-center py-10 text-vscode-comment">
                 No logs found. Logs will appear here automatically.
             </div>
             <!-- Log Entries -->
@@ -200,12 +215,13 @@
                 isSearchMode: false,
                 isDateTimeSearch: false,
                 hasMoreSearchResults: false,
+                searchContinuationCursor: '', // Cursor to continue batch searching
                 searchStartTime: '',
                 searchEndTime: '',
                 lastScrollTop: 0,
                 isProgrammaticScroll: false,
                 wasLiveTailingBeforeHidden: false,
-                debugEnabled: false, // Set to true to enable debug logging
+                debugEnabled: true, // Set to true to enable debug logging
 
                 debug(message, data = null) {
                     if (this.debugEnabled) {
@@ -348,13 +364,14 @@
 
                 async loadOlderSearchResults() {
                     this.debug('loadOlderSearchResults() - Called');
-                    if (this.logs.length === 0 || this.loadingOlder || !this.hasMoreSearchResults) {
+                    if (this.loadingOlder || !this.hasMoreSearchResults) {
                         this.debug('loadOlderSearchResults() - Skipping');
                         return;
                     }
 
-                    const oldestCursor = this.logs[0].cursor;
-                    this.debug('loadOlderSearchResults() - Loading before cursor:', oldestCursor);
+                    // Use continuation cursor if available (for batch searching), otherwise use oldest log cursor
+                    const cursorToUse = this.searchContinuationCursor || (this.logs.length > 0 ? this.logs[0].cursor : '');
+                    this.debug('loadOlderSearchResults() - Loading before cursor:', cursorToUse, '(continuation:', !!this.searchContinuationCursor, ')');
                     this.loadingOlder = true;
 
                     // Remember scroll position
@@ -362,34 +379,64 @@
                     const oldScrollHeight = container.scrollHeight;
 
                     try {
-                        const response = await fetch(`${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}&limit=101&before=${oldestCursor}&start=${encodeURIComponent(this.searchStartTime)}&end=${encodeURIComponent(this.searchEndTime)}`);
+                        // Backend returns { logs: [], continuation_cursor: "" }
+                        const response = await fetch(`${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}&before=${cursorToUse}`);
                         if (!response.ok) {
                             throw new Error('Failed to load older search results');
                         }
 
-                        let data = await response.json();
-                        this.debug('loadOlderSearchResults() - Received:', data?.length);
+                        const searchResponse = await response.json();
+                        let data = searchResponse.logs || [];
+                        const newCursor = searchResponse.continuation_cursor || '';
+                        this.debug('loadOlderSearchResults() - Old cursor:', this.searchContinuationCursor);
+                        this.debug('loadOlderSearchResults() - New cursor:', newCursor);
+                        this.searchContinuationCursor = newCursor;
+                        this.debug('loadOlderSearchResults() - Received', data?.length, 'results, continuation_cursor:', this.searchContinuationCursor);
+
                         if (data && data.length > 0) {
+                            // If we got 101 results, there are more - trim to 100
                             if (data.length > 100) {
                                 this.hasMoreSearchResults = true;
                                 data = data.slice(0, 100);
-                            }
-                            else {
+                            } else if (this.searchContinuationCursor) {
+                                // Batch limit reached without enough matches - can continue searching
+                                this.hasMoreSearchResults = true;
+                            } else {
                                 this.hasMoreSearchResults = false;
                             }
 
                             data.reverse();
-                            this.logs = [...data, ...this.logs];
 
-                            // Maintain scroll position
-                            this.$nextTick(() => {
-                                const newScrollHeight = container.scrollHeight;
-                                container.scrollTop = newScrollHeight - oldScrollHeight;
-                            });
+                            // Deduplicate by cursor before prepending
+                            const existingCursors = new Set(this.logs.map(log => log.cursor));
+                            const newLogs = data.filter(log => !existingCursors.has(log.cursor));
+                            this.debug('loadOlderSearchResults() - After deduplication:', newLogs.length, 'new logs (filtered', data.length - newLogs.length, 'duplicates)');
+
+                            // If we had 0 logs before, just set them; otherwise prepend
+                            if (this.logs.length === 0) {
+                                this.logs = newLogs;
+                                // Scroll to bottom for first batch of results
+                                this.$nextTick(() => {
+                                    this.scrollToBottom();
+                                });
+                            } else {
+                                this.logs = [...newLogs, ...this.logs];
+                                // Maintain scroll position
+                                this.$nextTick(() => {
+                                    const newScrollHeight = container.scrollHeight;
+                                    container.scrollTop = newScrollHeight - oldScrollHeight;
+                                });
+                            }
                         }
                         else {
-                            this.debug('loadOlderSearchResults() - No more results');
-                            this.hasMoreSearchResults = false;
+                            // Got 0 results - check if we can continue searching
+                            if (this.searchContinuationCursor) {
+                                this.debug('loadOlderSearchResults() - No results in this batch, but can continue searching');
+                                this.hasMoreSearchResults = true;
+                            } else {
+                                this.debug('loadOlderSearchResults() - No more results and no continuation cursor');
+                                this.hasMoreSearchResults = false;
+                            }
                         }
                     }
                     catch (error) {
@@ -532,28 +579,30 @@
                         }
                         else {
                             this.debug('performSearch() - Text search for:', this.searchQuery);
-                            // Request 101 to check if there are more
-                            const response = await fetch(`${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}&limit=101`);
+                            // Backend returns { logs: [], continuation_cursor: "" }
+                            const response = await fetch(`${this.basePath}/logs/search?q=${encodeURIComponent(this.searchQuery)}`);
                             if (!response.ok) {
                                 throw new Error('Search failed');
                             }
-                            data = await response.json();
-                            this.debug('performSearch() - Received text search results:', data?.length);
+                            const searchResponse = await response.json();
+                            data = searchResponse.logs || [];
+                            this.searchContinuationCursor = searchResponse.continuation_cursor || '';
+                            this.debug('performSearch() - Received', data?.length, 'results, continuation_cursor:', this.searchContinuationCursor);
 
-                            // Store search time range for pagination
-                            this.searchStartTime = new Date(Date.now() - 24*60*60*1000).toISOString(); // Default: last 24h
-                            this.searchEndTime = new Date().toISOString();
-
-                            // If we got 101 results, there may be more
+                            // If we got 101 results, there are more - trim to 100
                             if (data && data.length > 100) {
                                 this.hasMoreSearchResults = true;
-                                data = data.slice(0, 100); // Keep only first 100
-                            }
-                            else {
+                                data = data.slice(0, 100);
+                            } else if (this.searchContinuationCursor) {
+                                // Batch limit reached without enough matches - can continue searching
+                                this.hasMoreSearchResults = true;
+                            } else {
                                 this.hasMoreSearchResults = false;
                             }
 
-                            this.statusMessage = `Found ${data?.length || 0} results${this.hasMoreSearchResults ? ' (scroll up for more)' : ''}`;
+                            const resultCount = data?.length || 0;
+                            const moreMsg = this.hasMoreSearchResults ? ' (scroll up for more)' : '';
+                            this.statusMessage = `Found ${resultCount} results${moreMsg}`;
                             if (data && data.length > 0) {
                                 data.reverse();
                             }
@@ -640,7 +689,7 @@
                     const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
                     const isFirstScroll = this.lastScrollTop === 0 && currentScrollTop > 0;
 
-                    if (!isFirstScroll && scrollingUp && currentScrollTop < 100 && !this.loadingOlder) {
+                    if (!isFirstScroll && scrollingUp && currentScrollTop < 100 && !this.loadingOlder && this.logs.length > 0) {
                         if (this.isDateTimeSearch) {
                             // In datetime search mode: load older logs
                             this.loadOlderDateTimeLogs();
@@ -791,6 +840,35 @@
                     const className = parts[parts.length - 1];
 
                     return abbreviated + '.' + className;
+                },
+
+                getContinuationTimestamp() {
+                    if (!this.searchContinuationCursor) {
+                        return '';
+                    }
+
+                    try {
+                        // ULID format: first 10 characters are base32-encoded timestamp
+                        const ulidTimePart = this.searchContinuationCursor.substring(0, 10);
+
+                        // Base32 alphabet used by ULID (Crockford's base32)
+                        const base32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+                        // Decode base32 to get milliseconds since epoch
+                        let timestamp = 0;
+                        for (let i = 0; i < ulidTimePart.length; i++) {
+                            const char = ulidTimePart[i];
+                            const value = base32.indexOf(char);
+                            if (value === -1) return '';
+                            timestamp = timestamp * 32 + value;
+                        }
+
+                        // Format the timestamp
+                        const date = new Date(timestamp);
+                        return this.formatTimestamp(date.toISOString());
+                    } catch (e) {
+                        return '';
+                    }
                 }
             };
         }

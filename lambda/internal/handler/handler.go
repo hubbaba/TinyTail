@@ -341,48 +341,17 @@ func (h *Handler) getLogsByDateTime(ctx context.Context, request events.APIGatew
 
 func (h *Handler) searchLogs(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
 	query := request.QueryStringParameters["q"]
-	startStr := request.QueryStringParameters["start"]
-	endStr := request.QueryStringParameters["end"]
-	limitStr := request.QueryStringParameters["limit"]
 	beforeCursor := request.QueryStringParameters["before"]
 
-	var startTime, endTime time.Time
-	var err error
-
-	if startStr != "" {
-		startTime, err = time.Parse(time.RFC3339, startStr)
-		if err != nil {
-			return jsonResponse(http.StatusBadRequest, map[string]string{"error": "Invalid start time format"})
-		}
-	} else {
-		startTime = time.Now().Add(-24 * time.Hour)
-	}
-
-	if endStr != "" {
-		endTime, err = time.Parse(time.RFC3339, endStr)
-		if err != nil {
-			return jsonResponse(http.StatusBadRequest, map[string]string{"error": "Invalid end time format"})
-		}
-	} else {
-		endTime = time.Now()
-	}
-
-	// Parse limit parameter
-	limit := 0
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err != nil || parsedLimit < 1 {
-			return jsonResponse(http.StatusBadRequest, map[string]string{"error": "Invalid limit parameter"})
-		}
-		limit = parsedLimit
-	}
-
-	logs, err := h.logStore.SearchLogsWithCursor(ctx, query, startTime, endTime, beforeCursor, limit)
+	// Request 101 results - if we get 101, the client knows there are more
+	// Also returns continuation_cursor if batch limit reached without enough matches
+	response, err := h.logStore.SearchLogsWithoutTimeWindow(ctx, query, beforeCursor, 100)
 	if err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("Failed to search logs: %v", err)})
 	}
 
-	return jsonResponse(http.StatusOK, logs)
+	// Return response with logs and optional continuation cursor
+	return jsonResponse(http.StatusOK, response)
 }
 
 func jsonResponse(statusCode int, body interface{}) (events.APIGatewayProxyResponse, error) {

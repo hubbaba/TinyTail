@@ -31,6 +31,12 @@ type LogEntry struct {
 	Cursor    string    `json:"cursor,omitempty"`
 }
 
+// SearchResponse represents the result of a search operation
+type SearchResponse struct {
+	Logs               []LogEntry `json:"logs"`
+	ContinuationCursor string     `json:"continuation_cursor,omitempty"` // Cursor to continue searching from if batch limit reached
+}
+
 // dynamoDBLogItem represents a log item as stored in DynamoDB (internal use only)
 type dynamoDBLogItem struct {
 	PK           string `dynamodbav:"pk"`
@@ -306,12 +312,145 @@ func (s *LogStore) unmarshalAndReassemble(items []map[string]types.AttributeValu
 	return logs, nil
 }
 
+// SearchLogsWithoutTimeWindow searches for logs matching the query string without time constraints.
+// It uses cursor-based pagination to traverse logs and returns up to matchLimit results.
+// The beforeCursor parameter allows pagination through search results.
+// It fetches matchLimit+1 results to determine if there are more results available.
+// If batch limit is reached without finding enough matches, returns a continuation cursor.
+func (s *LogStore) SearchLogsWithoutTimeWindow(ctx context.Context, query string, beforeCursor string, matchLimit int) (*SearchResponse, error) {
+	if matchLimit <= 0 {
+		matchLimit = 100
+	}
+
+	fmt.Printf("[SearchDebug] Starting search - query: '%s', beforeCursor: '%s', matchLimit: %d\n", query, beforeCursor, matchLimit)
+
+	matches := []LogEntry{}         // Initialize as empty slice, not nil
+	currentCursor := beforeCursor
+	batchSize := 1000               // Examine 1000 logs at a time
+	maxBatches := 50                // Limit batches to prevent excessive scanning
+	targetMatches := matchLimit + 1 // Fetch one extra to detect if there are more
+	oldestExaminedCursor := ""      // Track the oldest log cursor we examined
+	oldestMatchCursor := ""         // Track the oldest match cursor
+
+	lowerQuery := strings.ToLower(query)
+	fmt.Printf("[SearchDebug] Lowercase query: '%s'\n", lowerQuery)
+	batchesProcessed := 0
+	totalLogsExamined := 0
+	reachedEnd := false
+
+	for batch := 0; batch < maxBatches && len(matches) < targetMatches; batch++ {
+		// Query a batch of logs starting from currentCursor going backwards
+		fmt.Printf("[SearchDebug] Batch %d: calling GetLogs with beforeCursor='%s'\n", batch+1, currentCursor)
+		logs, err := s.GetLogs(ctx, batchSize, "", currentCursor)
+		if err != nil {
+			return nil, err
+		}
+
+		fmt.Printf("[SearchDebug] Batch %d: received %d logs (matches so far: %d)\n", batch+1, len(logs), len(matches))
+		if len(logs) > 0 {
+			fmt.Printf("[SearchDebug] Batch %d: first log cursor='%s', last log cursor='%s'\n",
+				batch+1, logs[0].Cursor, logs[len(logs)-1].Cursor)
+		}
+
+		if len(logs) == 0 {
+			fmt.Printf("[SearchDebug] No logs returned, setting reachedEnd=true\n")
+			reachedEnd = true
+			break // No more logs available
+		}
+
+		// Debug: show first log message from first batch
+		if batch == 0 && len(logs) > 0 {
+			fmt.Printf("[SearchDebug] Sample log from batch 1: message='%s', level='%s', source='%s'\n",
+				logs[0].Message, logs[0].Level, logs[0].Source)
+		}
+
+		batchesProcessed++
+		totalLogsExamined += len(logs)
+
+		// Filter for matches
+		for _, log := range logs {
+			if strings.Contains(strings.ToLower(log.Message), lowerQuery) ||
+				strings.Contains(strings.ToLower(log.Level), lowerQuery) ||
+				strings.Contains(strings.ToLower(log.Source), lowerQuery) {
+				matches = append(matches, log)
+				oldestMatchCursor = log.Cursor // Track the oldest match
+				if len(matches) >= targetMatches {
+					break // Stop collecting matches, we have enough
+				}
+			}
+		}
+
+		// If we found enough matches, stop examining batches
+		if len(matches) >= targetMatches {
+			fmt.Printf("[SearchDebug] Found %d matches (target: %d), stopping batch examination\n", len(matches), targetMatches)
+			break
+		}
+
+		// Track the oldest log cursor we've examined (for detecting end)
+		// After GetLogs reverses the array, logs[0] is oldest and logs[len-1] is newest
+		if len(logs) > 0 {
+			oldestExaminedCursor = logs[0].Cursor  // Use first element which is the oldest
+			currentCursor = oldestExaminedCursor
+		}
+
+		// Only stop if we get 0 logs (truly reached the end)
+		// Getting <1000 logs might just mean we're between log clusters
+		// Continue to let the next batch try with the oldest cursor
+		if len(logs) == 0 {
+			fmt.Printf("[SearchDebug] Batch returned 0 logs, setting reachedEnd=true\n")
+			reachedEnd = true
+			break
+		}
+	}
+
+	fmt.Printf("[SearchDebug] Search complete: processed %d batches, examined %d total logs, found %d matches, reachedEnd=%v, oldestExaminedCursor=%s, oldestMatchCursor=%s\n",
+		batchesProcessed, totalLogsExamined, len(matches), reachedEnd, oldestExaminedCursor, oldestMatchCursor)
+
+	// Log first and last match cursors to verify no duplicates
+	if len(matches) > 0 {
+		fmt.Printf("[SearchDebug] Matches: first cursor='%s', last cursor='%s'\n",
+			matches[0].Cursor, matches[len(matches)-1].Cursor)
+	}
+
+	response := &SearchResponse{
+		Logs: matches,
+	}
+
+	// Determine which cursor to use for continuation:
+	// 1. If we found >= targetMatches (filled the batch), use oldestMatchCursor
+	//    This continues from where we have results, not from where we stopped examining
+	// 2. If we examined all batches but didn't fill, use oldestExaminedCursor
+	//    This continues examining from where we left off
+	var cursorToUse string
+	var cursorReason string
+
+	if len(matches) >= targetMatches && oldestMatchCursor != "" {
+		// We filled the batch with matches
+		cursorToUse = oldestMatchCursor
+		cursorReason = "oldestMatchCursor (batch filled)"
+	} else if batchesProcessed >= maxBatches && !reachedEnd && oldestExaminedCursor != "" {
+		// We hit the batch limit without filling matches
+		cursorToUse = oldestExaminedCursor
+		cursorReason = "oldestExaminedCursor (batch limit reached)"
+	}
+
+	if cursorToUse != "" {
+		fmt.Printf("[SearchDebug] Providing continuation cursor (%s): %s\n", cursorReason, cursorToUse)
+		response.ContinuationCursor = cursorToUse
+	} else {
+		fmt.Printf("[SearchDebug] NOT providing continuation cursor (matches=%d, batches=%d, reachedEnd=%v)\n",
+			len(matches), batchesProcessed, reachedEnd)
+	}
+
+	return response, nil
+}
+
 func (s *LogStore) GetLogs(ctx context.Context, limit int, afterCursor, beforeCursor string) ([]LogEntry, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	if limit > 500 {
-		limit = 500
+	if limit > 1000 {
+		limit = 1000
 	}
 
 	var keyCondition string

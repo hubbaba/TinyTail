@@ -413,7 +413,8 @@
                                 this.hasMoreSearchResults = false;
                             }
 
-                            data.reverse();
+                            // Sort by timestamp ascending (oldest first)
+                            data.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
                             // Deduplicate by cursor before prepending
                             const existingCursors = new Set(this.logs.map(log => log.cursor));
@@ -612,7 +613,8 @@
                             const moreMsg = this.hasMoreSearchResults ? ' (scroll up for more)' : '';
                             this.statusMessage = `Found ${resultCount} results${moreMsg}`;
                             if (data && data.length > 0) {
-                                data.reverse();
+                                // Sort by timestamp ascending (oldest first)
+                                data.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
                             }
                         }
 

@@ -132,6 +132,14 @@
             <div x-show="loadingOlder" class="text-center py-2 text-vscode-comment text-xs bg-vscode-panel">
                 Loading older logs...
             </div>
+            <!-- Continue searching indicator (shown at top when we can search more) -->
+            <div x-show="!loadingOlder && logs.length > 0 && isSearchMode && hasMoreSearchResults" class="text-center py-2 bg-vscode-panel border-b border-vscode-border">
+                <button
+                    @click="loadOlderSearchResults()"
+                    class="text-sm text-vscode-accent hover:underline focus:outline-none">
+                    ↑ Search older logs (before <span x-text="getContinuationTimestamp()"></span>)
+                </button>
+            </div>
             <!-- Loading State -->
             <div x-show="loading && logs.length === 0" class="text-center py-10 text-vscode-comment">
                 Loading logs...

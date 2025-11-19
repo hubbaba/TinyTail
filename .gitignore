@@ -4,6 +4,7 @@
 *.so
 *.dylib
 bootstrap
+lambda/cmd/tinytail/tinytail
 
 # Go
 *.test

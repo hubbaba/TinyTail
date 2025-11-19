@@ -2,7 +2,7 @@ package handler
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,6 +19,9 @@ var indexHTML string
 
 //go:embed ui/login.html
 var loginHTML string
+
+//go:embed ui/js/*
+var jsFiles embed.FS
 
 type Handler struct {
 	logStore     *store.LogStore
@@ -37,29 +40,38 @@ func NewHandler(logStore *store.LogStore, sessionStore *store.SessionStore, inge
 }
 
 func (h *Handler) Handle(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	// Normalize path by removing stage prefix if present
+	path := request.Path
+	if request.RequestContext.Stage != "" && request.RequestContext.Stage != "$default" {
+		stagePrefix := "/" + request.RequestContext.Stage
+		path = strings.TrimPrefix(path, stagePrefix)
+	}
+
 	switch {
 	// Public routes - no auth required
-	case request.HTTPMethod == "GET" && request.Path == "/login":
+	case request.HTTPMethod == "GET" && path == "/login":
 		return h.serveLoginPage()
-	case request.HTTPMethod == "POST" && request.Path == "/auth/login":
+	case request.HTTPMethod == "POST" && path == "/auth/login":
 		return h.handleLogin(ctx, request)
-	case request.HTTPMethod == "POST" && request.Path == "/logs/ingest":
+	case request.HTTPMethod == "POST" && path == "/logs/ingest":
 		return h.ingestLogs(ctx, request)
+	case request.HTTPMethod == "GET" && strings.HasPrefix(path, "/js/"):
+		return h.serveStaticJS(path)
 
 	// Protected routes - require session
-	case request.HTTPMethod == "GET" && request.Path == "/":
+	case request.HTTPMethod == "GET" && path == "/":
 		return h.requireAuth(ctx, request, h.serveIndex)
-	case request.HTTPMethod == "POST" && request.Path == "/auth/logout":
+	case request.HTTPMethod == "POST" && path == "/auth/logout":
 		return h.requireAuth(ctx, request, h.handleLogout)
-	case request.HTTPMethod == "GET" && request.Path == "/logs/latest":
+	case request.HTTPMethod == "GET" && path == "/logs/latest":
 		return h.requireAuth(ctx, request, h.getLatestLogs)
-	case request.HTTPMethod == "GET" && request.Path == "/logs":
+	case request.HTTPMethod == "GET" && path == "/logs":
 		return h.requireAuth(ctx, request, h.getLogs)
-	case request.HTTPMethod == "GET" && request.Path == "/logs/date":
+	case request.HTTPMethod == "GET" && path == "/logs/date":
 		return h.requireAuth(ctx, request, h.getLogsByDate)
-	case request.HTTPMethod == "GET" && request.Path == "/logs/datetime":
+	case request.HTTPMethod == "GET" && path == "/logs/datetime":
 		return h.requireAuth(ctx, request, h.getLogsByDateTime)
-	case request.HTTPMethod == "GET" && request.Path == "/logs/search":
+	case request.HTTPMethod == "GET" && path == "/logs/search":
 		return h.requireAuth(ctx, request, h.searchLogs)
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]string{"error": "Not found"})
@@ -132,6 +144,29 @@ func (h *Handler) serveIndex(ctx context.Context, request events.APIGatewayProxy
 			"Content-Type": "text/html",
 		},
 		Body: indexHTML,
+	}, nil
+}
+
+func (h *Handler) serveStaticJS(path string) (events.APIGatewayProxyResponse, error) {
+	// Remove leading slash to match embedded path: /js/tailwind.js -> js/tailwind.js
+	filePath := strings.TrimPrefix(path, "/")
+	filePath = "ui/" + filePath
+
+	content, err := jsFiles.ReadFile(filePath)
+	if err != nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusNotFound,
+			Body:       "File not found",
+		}, nil
+	}
+
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Headers: map[string]string{
+			"Content-Type":  "application/javascript",
+			"Cache-Control": "public, max-age=86400", // Cache for 1 day
+		},
+		Body: string(content),
 	}, nil
 }
 

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TinyTail - Log Viewer</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%231e1e1e' width='100' height='100'/%3E%3Cpath d='M20 25h45' stroke='%234ec9b0' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M20 40h60' stroke='%234ec9b0' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M20 55h50' stroke='%234ec9b0' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M20 70h35' stroke='%2358d1b3' stroke-width='5' stroke-linecap='round'/%3E%3Ccircle cx='62' cy='70' r='3' fill='%2358d1b3'/%3E%3Ccircle cx='70' cy='70' r='3' fill='%2358d1b3'/%3E%3Ccircle cx='78' cy='70' r='3' fill='%2358d1b3'/%3E%3C/svg%3E">
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="js/tailwind.js"></script>
     <script>
         tailwind.config = {
             theme: {
@@ -28,7 +28,7 @@
             }
         }
     </script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+    <script defer src="js/alpine.js"></script>
     <style>
         [x-cloak] { display: none !important; }
         .log-message {
@@ -608,7 +608,7 @@
                             } else {
                                 this.hasMoreSearchResults = false;
                             }
-                            
+
                             this.statusMessage = `Search Results`;
                             if (data && data.length > 0) {
                                 // Sort by timestamp ascending (oldest first)

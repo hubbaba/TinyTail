@@ -185,6 +185,12 @@ Resources:
             Path: /logs
             Method: GET
             RestApiId: !Ref ApiGateway
+        ServeStaticJS:
+          Type: Api
+          Properties:
+            Path: /js/{proxy+}
+            Method: GET
+            RestApiId: !Ref ApiGateway
 
   ApiGateway:
     Type: AWS::Serverless::Api
